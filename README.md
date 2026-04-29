@@ -481,5 +481,5 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE)
 
 ## 联系方式
 
-- 📧 Email: [contact@clawhermes.com](mailto:contact@clawhermes.com)
-- 🐙 GitHub: [clawhermes/clawhermes-ai-go](https://github.com/clawhermes/clawhermes-ai-go)
+- 📧 Email: [18348792873@163.com](18348792873@163.com)
+- 🐙 GitHub: [byteBuilderX/ClawHermes-AI-Go](https://github.com/byteBuilderX/ClawHermes-AI-Go)
