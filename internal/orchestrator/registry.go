@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"clawhermes-ai-go/internal/skill"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/skill"
 )
 
 type Registry struct {

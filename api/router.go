@@ -1,11 +1,11 @@
 package api
 
 import (
-	"clawhermes-ai-go/api/handler"
-	"clawhermes-ai-go/api/middleware"
-	"clawhermes-ai-go/internal/config"
-	"clawhermes-ai-go/internal/llmgateway"
-	"clawhermes-ai-go/internal/orchestrator"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/api/handler"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/api/middleware"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/config"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/llmgateway"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/orchestrator"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )

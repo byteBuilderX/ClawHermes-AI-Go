@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"testing"
 
-	"clawhermes-ai-go/internal/skill"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/skill"
 )
 
 func TestRegistry(t *testing.T) {

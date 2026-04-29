@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 
-	"clawhermes-ai-go/internal/knowledge"
-	"clawhermes-ai-go/pkg/mcp"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/knowledge"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/pkg/mcp"
 	"go.uber.org/zap"
 )
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"log"
 
-	"clawhermes-ai-go/api"
-	"clawhermes-ai-go/internal/config"
-	"clawhermes-ai-go/internal/hermes"
-	"clawhermes-ai-go/internal/llmgateway"
-	"clawhermes-ai-go/internal/orchestrator"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/api"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/config"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/hermes"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/llmgateway"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/orchestrator"
 	"go.uber.org/zap"
 )
 

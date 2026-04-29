@@ -3,7 +3,7 @@ package middleware
 import (
 	"time"
 
-	"clawhermes-ai-go/pkg/observability"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/pkg/observability"
 	"github.com/gin-gonic/gin"
 )
 

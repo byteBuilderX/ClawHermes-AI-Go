@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"clawhermes-ai-go/internal/llmgateway"
+	"github.com/byteBuilderX/ClawHermes-AI-Go/internal/llmgateway"
 	"go.uber.org/zap"
 )
 
