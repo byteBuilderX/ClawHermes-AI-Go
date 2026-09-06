@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -675,8 +676,31 @@ func centerFilter(c *gin.Context, kind, id string) (port.CenterFilter, error) {
 	if id != "" {
 		req.ResourceID = id
 	}
+	// 被测收敛：筛选放行四类单值（skill/mcp 历史只读）与默认双轨 CSV
+	// 'agent,knowledge'；非法 token 在此统一 400，替代被移除的 oneof tag。
+	if err := validateCenterResourceKind(req.ResourceKind); err != nil {
+		return port.CenterFilter{}, err
+	}
 	return port.CenterFilter{ResourceKind: req.ResourceKind, ResourceID: req.ResourceID, Status: req.Status,
 		Cursor: req.Cursor, Limit: req.Limit}, nil
+}
+
+// validateCenterResourceKind 校验评测中心被测类型筛选值：空串=全部；每个逗号分隔
+// token 都必须是对被测类型的合法取值（skill/agent/mcp/knowledge，逐 token 复用
+// domain.ResourceKind.Validate，避免在 handler 复制允许集）。
+func validateCenterResourceKind(kind string) error {
+	if kind == "" {
+		return nil
+	}
+	for _, token := range strings.Split(kind, ",") {
+		if token == "" {
+			return errors.New("resource_kind 含空的逗号分隔 token")
+		}
+		if err := domain.ResourceKind(token).Validate(); err != nil {
+			return fmt.Errorf("resource_kind %q 不支持：被测筛选仅支持 skill/agent/mcp/knowledge 或其逗号组合", token)
+		}
+	}
+	return nil
 }
 
 func queryPage[T any](c *gin.Context, call func(string, port.CenterFilter) (T, error), kind, id string) {

@@ -189,6 +189,39 @@ func TestEvaluationHandlerListResourcesPropagatesFilters(t *testing.T) {
 	}
 }
 
+func TestEvaluationHandlerCenterResourceKindFilterAllowsCSV(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantKind   string
+	}{
+		{name: "default two-track CSV passes through", query: "resource_kind=agent,knowledge", wantStatus: http.StatusOK, wantKind: "agent,knowledge"},
+		{name: "single legacy kind still works", query: "resource_kind=skill", wantStatus: http.StatusOK, wantKind: "skill"},
+		{name: "empty kind means all kinds", query: "resource_kind=", wantStatus: http.StatusOK, wantKind: ""},
+		{name: "unsupported kind rejected", query: "resource_kind=banana", wantStatus: http.StatusBadRequest, wantKind: ""},
+		{name: "empty csv token rejected", query: "resource_kind=agent,,knowledge", wantStatus: http.StatusBadRequest, wantKind: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := &fakeEvaluationQueries{}
+			h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
+			r := gin.New()
+			r.Use(middleware.ErrorHandler(zap.NewNop()))
+			r.GET("/evaluations/resources", withTenant("tenant-1"), h.ListResources)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/evaluations/resources?"+tc.query, nil))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK && queries.filter.ResourceKind != tc.wantKind {
+				t.Fatalf("kind not propagated: got %q want %q", queries.filter.ResourceKind, tc.wantKind)
+			}
+		})
+	}
+}
+
 func TestEvaluationHandlerListExperimentsSerializesSafePromotionEvidence(t *testing.T) {
 	queries := &fakeEvaluationQueries{}
 	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
