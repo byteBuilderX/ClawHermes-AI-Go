@@ -132,10 +132,21 @@ export const observedTraceEvidenceSchema = z.object({
 });
 export type ObservedTraceEvidence = z.infer<typeof observedTraceEvidenceSchema>;
 
+// runResourceAnchorSchema 解析 run 详情里的「评测资源版本锚定」项（后端从
+// context_snapshot.pinned_assignments 平铺展开）：被测主体恒在首位，其后是
+// 绑定的 skill/mcp/knowledge 资源及各自锁定的 revision。
+export const runResourceAnchorSchema = z.object({
+  kind: resourceKindSchema,
+  resource_id: z.string(),
+  revision_id: z.string(),
+}).strict();
+export type RunResourceAnchor = z.infer<typeof runResourceAnchorSchema>;
+
 export const evaluationRunSchema = z.object({
   id: z.string(),
   resource: resourceRefSchema,
   suite_revision_id: z.string(),
+  anchors: z.array(runResourceAnchorSchema).optional(),
   passed: z.boolean(),
   total_cases: z.number(),
   passed_cases: z.number(),

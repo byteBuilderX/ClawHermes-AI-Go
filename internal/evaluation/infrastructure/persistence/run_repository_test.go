@@ -282,6 +282,7 @@ func TestRunRoundTripSnapshot(t *testing.T) {
 		ResolvedExecution: domain.ResolvedExecution{ContextWindow: 2000, OutputReserve: 500},
 		PinnedAssignments: domain.PinnedAssignments{
 			SkillAgentRevision: map[string]string{"skill-1": "rev-abc"},
+			SkillRevisions:     map[string]string{"skill-1": "rev-skill-7"},
 			MCPRevisions:       map[string]string{"mcp-1": "rev-mcp"},
 			KnowledgeRevisions: map[string]string{"kb-1": "rev-kb"},
 		},

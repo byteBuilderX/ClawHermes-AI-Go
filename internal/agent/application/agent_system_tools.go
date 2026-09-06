@@ -401,7 +401,13 @@ func (s *AgentService) resolveSkillRevisionRefs(
 	for _, skillID := range allowedSkills {
 		ref := port.SkillRevisionRef{SkillID: skillID}
 		var assignment port.SkillRevisionAssignment
-		if s.deps.SkillRevisionResolver != nil {
+		// 评测执行（执行快照在 ctx）：绑定 skill 固定到 run 创建时点 pin
+		// （PinnedSkills），优先于 skill 自身 canary 实验分流——评测锚定当时生效
+		// 发布版，之后 skill 发版/实验都不影响已创建 run。pin 缺失（创建时该
+		// skill 未发布、未解析）回退既有非评测逻辑。
+		if rev, pinned := s.pinnedSkillRevision(ctx, skillID); pinned {
+			ref.RevisionID = rev
+		} else if s.deps.SkillRevisionResolver != nil {
 			resolved, found, err := s.deps.SkillRevisionResolver.ResolveSkillRevision(ctx, tenantID, skillID, subjectID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("resolve Skill %s experiment assignment: %w", skillID, err)
@@ -417,6 +423,17 @@ func (s *AgentService) resolveSkillRevisionRefs(
 		}
 	}
 	return refs, assignments, nil
+}
+
+// pinnedSkillRevision 返回评测执行快照中被测 agent 绑定的 skill pin revisionID。
+// 执行快照缺失（非评测链路）或该 skill 未 pin 时返回 found=false。
+func (s *AgentService) pinnedSkillRevision(ctx context.Context, skillID string) (string, bool) {
+	es := port.ExecutionSnapshotFromCtx(ctx)
+	if es == nil {
+		return "", false
+	}
+	rev, ok := es.PinnedSkills[skillID]
+	return rev, ok
 }
 
 func applySkillAssignments(

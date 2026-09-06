@@ -2,9 +2,10 @@ import { Alert, Descriptions, Drawer, Progress, Skeleton, Tabs, Typography } fro
 import { useEffect, useState } from 'react';
 
 import { evaluationApi } from '../api/evaluation.api';
-import type { EvaluationRun, RunSummary } from '../model/evaluation';
+import type { EvaluationRun, RunResourceAnchor, RunSummary } from '../model/evaluation';
 
 import { CompareRunsPanel } from './CompareRunsPanel';
+import { RunAnchorPanel } from './RunAnchorPanel';
 import { RunAttributionPanel } from './RunAttributionPanel';
 import { RunMetricPanel } from './RunMetricPanel';
 import { drawerWidth, runDisplayStatus, StatusTag } from './evaluationView';
@@ -14,6 +15,7 @@ export const RunDrawer = ({ run, open, onClose, isMobile, runs }: {
 }) => {
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null);
   const [runResults, setRunResults] = useState<EvaluationRun['results'] | null>(null);
+  const [anchors, setAnchors] = useState<RunResourceAnchor[] | null>(null);
 
   useEffect(() => {
     if (!open || !run) {
@@ -22,17 +24,20 @@ export const RunDrawer = ({ run, open, onClose, isMobile, runs }: {
     let cancelled = false;
     setMetrics(null);
     setRunResults(null);
+    setAnchors(null);
     void evaluationApi.getRun(run.id)
       .then((detail) => {
         if (!cancelled) {
           setMetrics(detail.metrics ?? {});
           setRunResults(detail.results ?? []);
+          setAnchors(detail.anchors ?? []);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setMetrics({});
           setRunResults([]);
+          setAnchors([]);
         }
       });
     return () => {
@@ -57,6 +62,7 @@ export const RunDrawer = ({ run, open, onClose, isMobile, runs }: {
               </Descriptions>
               <Progress percent={run.total_cases ? Math.round(run.passed_cases / run.total_cases * 100) : 0} />
               {!run.passed && <Alert type="warning" showIcon message="运行未通过，请依据已脱敏的失败摘要定位问题。" />}
+              <RunAnchorPanel anchors={anchors} />
             </>,
           },
           {

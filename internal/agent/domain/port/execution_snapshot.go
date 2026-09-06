@@ -11,6 +11,9 @@ type ExecutionSnapshot struct {
 	OutputReserveTokens int
 	PinnedMCP           map[string]MCPRevisionPin
 	PinnedKnowledge     map[string]KnowledgeRevisionPin
+	// PinnedSkills 是评测锚定的被测 agent 绑定 skill → run 创建时点锁定
+	// revisionID（agent 消费侧；来源 eval snapshot PinnedAssignments.SkillRevisions）。
+	PinnedSkills map[string]string
 }
 
 type executionSnapshotCtxKey struct{}

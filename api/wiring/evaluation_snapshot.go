@@ -30,6 +30,8 @@ type snapshotCapturer struct {
 	vendor      func(string) (int, int)
 	mcpResolver agentport.MCPRevisionResolver
 	knowRes     agentport.KnowledgeRevisionResolver
+	// skills 解析被测 agent 绑定的 skill 的当时生效发布版（run 创建时点锚定）。
+	skills agentport.SkillActivationResolver
 	// bindings 解析 skill→承载 agent（agent_skill_links 只读 port）。
 	bindings agentport.AgentSkillBinding
 	// baselines 提供承载 agent 的 CreatePublishedBaseline（skill 场景锁 pin，D7）。
@@ -57,6 +59,7 @@ func (c snapshotCapturer) Capture(ctx context.Context, tenantID string, input ev
 			SkillAgentRevision: map[string]string{},
 			MCPRevisions:       map[string]string{},
 			KnowledgeRevisions: map[string]string{},
+			SkillRevisions:     map[string]string{},
 		},
 	}
 	evalGroup, err := c.captureGroup(ctx, evaldomain.GroupEvaluation)
@@ -246,10 +249,10 @@ func reserveFromDetail(d agentdomain.TenantModelDetail) int {
 	return 0
 }
 
-// capturePinnedAssignments 固化被测 agent 绑定的 MCP/Knowledge 当前分流 revision
-// （D4：评测执行用 pin 替代实时 canary 分流）。resolver 未命中（未分流/未绑定）→
-// 不入 pin，执行时该资源走非分流路径。subjectID 用 "evaluation:"+tenantID 固定
-// 键（评测无会话 subject；resolver 仅用它做确定性分流）。
+// capturePinnedAssignments 固化被测 agent 绑定的 MCP/Knowledge/Skill 当前分流
+// revision（D4：评测执行用 pin 替代实时 canary 分流/发版漂移）。resolver 未命中
+// （未分流/未绑定）→ 不入 pin，执行时该资源走非分流路径。subjectID 用
+// "evaluation:"+tenantID 固定键（评测无会话 subject；resolver 仅用它做确定性分流）。
 func (c snapshotCapturer) capturePinnedAssignments(ctx context.Context, tenantID string, rev *agentdomain.AgentRevision, snap *evaldomain.EvaluationContextSnapshot) {
 	subjectID := "evaluation:" + tenantID
 	for _, b := range rev.Bindings {
@@ -266,6 +269,8 @@ func (c snapshotCapturer) pinBinding(ctx context.Context, tenantID, subjectID st
 		c.pinMCP(ctx, tenantID, subjectID, b, snap)
 	case agentdomain.AgentBindingKnowledge:
 		c.pinKnowledge(ctx, tenantID, subjectID, b, snap)
+	case agentdomain.AgentBindingSkill:
+		c.pinSkill(ctx, tenantID, b, snap)
 	}
 }
 
@@ -299,4 +304,28 @@ func (c snapshotCapturer) pinKnowledge(ctx context.Context, tenantID, subjectID 
 		return
 	}
 	snap.PinnedAssignments.KnowledgeRevisions[b.Name] = a.Revision.RevisionID
+}
+
+// pinSkill 锚定被测 agent 绑定的 skill：空 revision → ResolveSkills 取当时
+// 生效的 active published revision，命中写 PinnedAssignments.SkillRevisions。
+// 与 MCP/Knowledge D4 一致的 fail-open：解析失败或 skill 未发布（无激活版）
+// → warn 不 pin，执行期该 skill 走非 pin 路径（本就解析不到时等同缺失）。
+func (c snapshotCapturer) pinSkill(ctx context.Context, tenantID string, b agentdomain.AgentBinding, snap *evaldomain.EvaluationContextSnapshot) {
+	if c.skills == nil {
+		return
+	}
+	catalog, err := c.skills.ResolveSkills(ctx, tenantID, []agentport.SkillRevisionRef{{SkillID: b.ID}})
+	if err != nil {
+		c.warn("evaluation.capture.pin skill resolve failed",
+			zap.Error(err), zap.String("tenant_id", tenantID), zap.String("skill_id", b.ID))
+		return
+	}
+	activation, ok := catalog[b.ID]
+	if !ok || activation.RevisionID == "" {
+		return
+	}
+	if snap.PinnedAssignments.SkillRevisions == nil {
+		snap.PinnedAssignments.SkillRevisions = map[string]string{}
+	}
+	snap.PinnedAssignments.SkillRevisions[b.ID] = activation.RevisionID
 }

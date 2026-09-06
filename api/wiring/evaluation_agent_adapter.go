@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	agentapp "github.com/byteBuilderX/stratum/internal/agent/application"
@@ -326,7 +327,7 @@ func (a agentEvaluationAdapter) injectExecutionSnapshot(
 
 // projectExecutionSnapshot 把 evaldomain 快照投影为 agent 消费侧 ExecutionSnapshot
 // （薄 ACL，D6）：trace 组 → TraceParameters；ResolvedExecution → 固化窗口/保留；
-// PinnedAssignments → MCP/Knowledge pin。
+// PinnedAssignments → MCP/Knowledge/Skill pin。
 func (a agentEvaluationAdapter) projectExecutionSnapshot(snap *evaldomain.EvaluationContextSnapshot) *agentport.ExecutionSnapshot {
 	es := &agentport.ExecutionSnapshot{
 		ContextWindowTokens: snap.ResolvedExecution.ContextWindow,
@@ -339,6 +340,10 @@ func (a agentEvaluationAdapter) projectExecutionSnapshot(snap *evaldomain.Evalua
 	}
 	for name, revID := range snap.PinnedAssignments.KnowledgeRevisions {
 		es.PinnedKnowledge[name] = agentport.KnowledgeRevisionPin{RevisionID: revID}
+	}
+	if len(snap.PinnedAssignments.SkillRevisions) > 0 {
+		es.PinnedSkills = make(map[string]string, len(snap.PinnedAssignments.SkillRevisions))
+		maps.Copy(es.PinnedSkills, snap.PinnedAssignments.SkillRevisions)
 	}
 	for _, g := range snap.Execution {
 		if g.GroupKey == evaldomain.GroupTrace {

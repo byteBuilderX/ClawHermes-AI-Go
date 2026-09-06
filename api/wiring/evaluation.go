@@ -1340,7 +1340,10 @@ func (c *Container) buildSnapshotCapturer(
 		modelCtx:  modelContextProvider(c.Agent.TenantResolver),
 		details:   tenantModelDetailsProvider(c.Agent.TenantResolver),
 		vendor:    llmgateway.LookupModelSpec,
-		logger:    c.Logger,
+		// skills 复用 agent 装配同源 resolver：评测执行期只依赖 ResolveSkills 的
+		// active 发布版解析，不受 skill 自身 canary 实验分流影响。
+		skills: publishedSkillActivationResolver{versions: skillVersionService(c)},
+		logger: c.Logger,
 	}
 	if runtimeMCPAdapter != nil && c.MCP != nil && c.MCP.Manager != nil {
 		capturer.mcpResolver = experimentMCPRevisionResolver{service: experimentService, adapter: *runtimeMCPAdapter}

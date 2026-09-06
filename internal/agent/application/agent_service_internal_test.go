@@ -579,6 +579,58 @@ func TestAssembleOptionsAttributesEveryExperimentDeterministically(t *testing.T)
 	}
 }
 
+// recordingSkillRevisionResolver 记录被咨询的 skillID，并返回固定实验分流 assignment
+// （skill 自身 canary 实验），用于断言评测 pin 优先于实验分流。
+type recordingSkillRevisionResolver struct {
+	assign map[string]port.SkillRevisionAssignment
+	calls  []string
+}
+
+func (r *recordingSkillRevisionResolver) ResolveSkillRevision(
+	_ context.Context, _, skillID, _ string,
+) (port.SkillRevisionAssignment, bool, error) {
+	r.calls = append(r.calls, skillID)
+	assignment, ok := r.assign[skillID]
+	return assignment, ok, nil
+}
+
+// TestResolveSkillRevisionRefsPrefersPinnedSkillOverExperiment 验证评测 ctx（执行
+// 快照带 PinnedSkills）下绑定 skill 固定到 run 创建时点 pin，优先于 skill 自身
+// canary 实验分流：被 pin 的 skill 不走实验 resolver、不落实验标签；未 pin 的
+// skill 维持既有实验分流。
+func TestResolveSkillRevisionRefsPrefersPinnedSkillOverExperiment(t *testing.T) {
+	experiment := &recordingSkillRevisionResolver{assign: map[string]port.SkillRevisionAssignment{
+		"skill-1": {RevisionID: "exp-rev-1", ExperimentID: "exp-1", Variant: "canary"},
+		"skill-2": {RevisionID: "exp-rev-2", ExperimentID: "exp-2", Variant: "canary"},
+	}}
+	svc := NewAgentService(AgentServiceDeps{
+		SkillRevisionResolver:   experiment,
+		SkillActivationResolver: multiExperimentActivationResolver{},
+		TenantModelValidator:    &stubTenantModelValidator{},
+	})
+	agent := &optionCaptureAgent{config: &domain.AgentConfig{
+		ID: "agent-1", LLMModel: "test-model", MaxIterations: 3,
+		AllowedSkills: []string{"skill-1", "skill-2"},
+	}}
+	ctx := port.WithExecutionSnapshot(context.Background(), &port.ExecutionSnapshot{
+		PinnedSkills: map[string]string{"skill-1": "pinned-rev-1"},
+	})
+	_, options, err := svc.assembleOptions(ctx, agent, ExecRequest{},
+		ExecMeta{TenantID: "tenant-1", TraceID: "trace-1"}, "execution-1")
+	require.NoError(t, err)
+
+	cfg := &ExecutionConfig{}
+	cfg.ApplyOptions(options)
+	// 被 pin 的 skill-1 固定到创建时点版本，不被实验 canary 覆盖，也不落实验标签。
+	require.Equal(t, "pinned-rev-1", cfg.EvolutionTrace.ResourceManifest["skill:skill-1"])
+	require.Empty(t, cfg.EvolutionTrace.ExperimentAssignments["skill:skill-1"])
+	// 未 pin 的 skill-2 维持既有实验分流（manifest + 实验标签）。
+	require.Equal(t, "exp-rev-2", cfg.EvolutionTrace.ResourceManifest["skill:skill-2"])
+	require.Equal(t, "canary", cfg.EvolutionTrace.ExperimentAssignments["skill:skill-2"].Variant)
+	// 实验 resolver 只被咨询未 pin 的 skill。
+	require.ElementsMatch(t, []string{"skill-2"}, experiment.calls)
+}
+
 func TestAgentServiceListsExecutionsFromEvidenceProviderWithExplicitTenant(t *testing.T) {
 	evidence := &evidenceProviderFake{}
 	svc := NewAgentService(AgentServiceDeps{EvidenceProvider: evidence})
