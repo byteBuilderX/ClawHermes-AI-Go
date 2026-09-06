@@ -202,6 +202,7 @@ export const evaluationApi = {
     return experimentResponseSchema.parse(response.data);
   },
   recordFeedback: async (data: {
+    resourceKind: ResourceKind;
     traceId: string;
     resourceId: string;
     score: number;
@@ -210,7 +211,7 @@ export const evaluationApi = {
   }) => {
     const response = await api.post('/evaluations/feedback', {
       trace_id: data.traceId,
-      resource_kind: 'skill',
+      resource_kind: data.resourceKind,
       resource_id: data.resourceId,
       score: data.score,
       outcome: data.outcome || {},

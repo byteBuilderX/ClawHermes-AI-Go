@@ -108,21 +108,23 @@ describe('EvolutionCommandModal', () => {
     })));
   });
 
-  it('keeps the feedback tab free of suite fields', async () => {
+  it('records feedback against the被测轨 kind without suite fields', async () => {
     const onFeedback = vi.fn().mockResolvedValue(undefined);
     render(<EvolutionCommandModal open onClose={vi.fn()} onOptimize={vi.fn()}
       onExperiment={vi.fn()} onFeedback={onFeedback} />);
     fireEvent.click(screen.getByRole('tab', { name: '记录反馈' }));
-    const panel = within(tabPanel('记录反馈'));
+    const feedbackPanel = tabPanel('记录反馈');
+    const panel = within(feedbackPanel);
 
     expect(screen.queryByRole('combobox', { name: '评测集' })).not.toBeInTheDocument();
+    await chooseResourceKind(feedbackPanel, 'Agent');
     fireEvent.change(panel.getByLabelText('Trace ID'), { target: { value: 'trace-1' } });
-    fireEvent.change(panel.getByLabelText('反馈资源 ID'), { target: { value: 'skill-1' } });
+    fireEvent.change(panel.getByLabelText('反馈资源 ID'), { target: { value: 'agent-1' } });
     fireEvent.change(panel.getByLabelText('分数'), { target: { value: '0.5' } });
     fireEvent.click(panel.getByRole('button', { name: '提交反馈' }));
 
     await waitFor(() => expect(onFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      trace_id: 'trace-1', resource_id: 'skill-1', score: 0.5,
+      resource_kind: 'agent', trace_id: 'trace-1', resource_id: 'agent-1', score: 0.5,
     })));
     const payload = onFeedback.mock.calls[0][0] as Record<string, unknown>;
     expect(payload).not.toHaveProperty('suite_revision_id');

@@ -261,6 +261,29 @@ func TestHandlerServesRegisteredOpikEvidence(t *testing.T) {
 	}
 }
 
+func TestHandlerServesRegisteredOpikEvidenceWithRegistrableKind(t *testing.T) {
+	t.Parallel()
+	traceID := "trace-opik-agent-kind"
+	register := httptest.NewRequest(http.MethodPost, "/e2e/opik/register", bytes.NewBufferString(
+		`{"trace_id":"`+traceID+`","tenant_id":"tenant-1","user_id":"user-1",`+
+			`"resource_kind":"agent","resource_id":"agent-1","revision_id":"revision-1"}`))
+	registerRec := httptest.NewRecorder()
+	handler(registerRec, register)
+	if registerRec.Code != http.StatusNoContent {
+		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/opik/v1/private/traces", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("trace status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`agent:agent-1`)) {
+		t.Fatalf("registered registrable kind must surface agent:agent-1 manifest key; trace evidence=%s", rec.Body.String())
+	}
+}
+
 func TestCompletionRecordsContextMarkersWithoutReturningPrompt(t *testing.T) {
 	register := httptest.NewRequest(http.MethodPost, "/e2e/context/register", bytes.NewBufferString(
 		`{"knowledge_marker":"knowledge-42","memory_marker":"memory-73"}`))

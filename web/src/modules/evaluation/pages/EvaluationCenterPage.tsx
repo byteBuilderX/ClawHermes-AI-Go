@@ -257,8 +257,9 @@ export const EvaluationCenterPage = () => {
       }}
       onFeedback={async (values) => {
         try {
-          await evaluationApi.recordFeedback({ traceId: values.trace_id, resourceId: values.resource_id,
-            score: values.score, outcome: { source: 'manual' }, idempotencyKey: crypto.randomUUID() });
+          await evaluationApi.recordFeedback({ resourceKind: values.resource_kind, traceId: values.trace_id,
+            resourceId: values.resource_id, score: values.score, outcome: { source: 'manual' },
+            idempotencyKey: crypto.randomUUID() });
           await center.reload();
           message.success({ content: '反馈已记录', duration: 2 });
         } catch (error) {
