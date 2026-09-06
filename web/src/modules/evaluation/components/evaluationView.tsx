@@ -24,3 +24,12 @@ export const SafeValue = ({ value }: { value: unknown }) => (
 );
 
 export const drawerWidth = (isMobile?: boolean) => (isMobile ? '100%' : 720);
+
+// kindFilterOptions 是被测对象收敛后统一的「资源类型」筛选下拉选项：当前被测
+// （agent/knowledge，可登记建档并发起评测）与历史（skill/mcp，只读——旧链路/
+// URL 以单值 ?kind= 打开浏览，不再提供新建与登记入口）。中心、健康趋势与监控
+// 面板共用同一来源，避免四处字面量漂移。
+export const kindFilterOptions = [
+  { label: '当前被测', options: ['agent', 'knowledge'].map((value) => ({ value, label: displayLabel(value) })) },
+  { label: '历史（只读）', options: ['skill', 'mcp'].map((value) => ({ value, label: displayLabel(value) })) },
+];

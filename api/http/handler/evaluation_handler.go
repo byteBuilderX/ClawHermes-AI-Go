@@ -206,6 +206,16 @@ func (h *EvaluationHandler) CreateBaseline(c *gin.Context) {
 		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
 		return
 	}
+	// 被测收敛：建档入口仅保留 agent 与 knowledge 两轨；skill/mcp 退出独立评测
+	// （skill 仅作被测 agent 绑定资源，其历史 baseline 由既有内部路径/读回承载，
+	// 这里禁止新建档，避免中心默认视图出现 skill/mcp 新行）。
+	switch kind {
+	case domain.ResourceKindAgent, domain.ResourceKindKnowledge:
+	default:
+		_ = c.Error(middleware.NewHTTPError(http.StatusForbidden,
+			errors.New("resource kind 不再支持建档：被测仅支持 agent 与 knowledge")))
+		return
+	}
 	ref, err := h.baselines.CreatePublishedBaseline(c.Request.Context(), tenantID, kind, c.Param("id"))
 	if err != nil {
 		_ = c.Error(err)

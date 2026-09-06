@@ -4,7 +4,6 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { SkillEvaluationPanel } from '../../evaluation/components/SkillEvaluationPanel';
 import { skillApi } from '../api/skill.api';
 import type { SkillRevision, SkillWorkspace } from '../model/skill';
 
@@ -241,11 +240,6 @@ export const SkillWorkspacePage = () => {
           onViewDetail={handleViewDetail}
           infoMessage="保存为草稿，发布后生效；历史版本可回滚，回滚不产生新版本。"
         />
-      ) },
-      { key: 'evaluation', label: '评测', children: (
-        // activeRevisionId 指向当前生效（已发布）版本；从未发布的 skill 无该指针，
-        // 面板据此提示先发布。建基线后跳评测中心并绑定 resource_id=skillId。
-        <SkillEvaluationPanel skillId={skill.id} stableRevisionId={skill.activeRevisionId ?? ''} isAdmin={isAdmin} />
       ) },
     ]} />
   </div>;

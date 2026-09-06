@@ -85,8 +85,9 @@ describe('SuiteListPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /新建评测集/ }));
 
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '资源类型' }));
-    // 页面表格内也有「技能」Tag，须用 option 的 title 精确定位下拉项
-    fireEvent.click(await screen.findByTitle('技能'));
+    // 新建评测集仅限当前被测对象 agent/knowledge（skill/mcp 退出建档）；表格内
+    // skill 套件展示的是「技能」Tag，下拉「Agent」文本在页面上唯一，直接文本点击。
+    fireEvent.click(await screen.findByText('Agent'));
     fireEvent.change(screen.getByLabelText('套件名称'), { target: { value: '客服基线' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '标准问候' } });
     fireEvent.change(screen.getByLabelText('测试输入'), { target: { value: '你好' } });
@@ -94,7 +95,7 @@ describe('SuiteListPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }));
 
     await waitFor(() => expect(api.createSuite).toHaveBeenCalledWith(expect.objectContaining({
-      name: '客服基线', resourceKind: 'skill',
+      name: '客服基线', resourceKind: 'agent',
       cases: [expect.objectContaining({ name: '标准问候', assertion_mode: 'contains', enabled: true })],
     })));
     expect(messageMocks.success).toHaveBeenCalledWith({ content: '评测集已创建', duration: 2 });

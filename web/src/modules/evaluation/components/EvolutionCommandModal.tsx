@@ -1,16 +1,15 @@
 import { Button, Form, Input, InputNumber, Modal, Select, Tabs, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 
+import { registrableResourceKinds } from '../model/evaluation';
 import type { ResourceKind } from '../model/evaluation';
 
 import { SuitePicker, type SuitePick } from './SuitePicker';
+import { displayLabel } from './evaluationView';
 
-const resourceOptions = [
-  { value: 'skill', label: 'Skill' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'mcp', label: 'MCP' },
-  { value: 'knowledge', label: '知识库' },
-];
+// 演化命令（生成优化/金丝雀实验）面向当前被测对象：skill/mcp 已退出被测，不再对
+// 历史类型发起优化与实验（历史 candidate/experiment 记录仅只读浏览）。
+const resourceOptions = registrableResourceKinds.map((value) => ({ value, label: displayLabel(value) }));
 
 export interface OptimizationCommandValues {
   resource_kind: ResourceKind;

@@ -1,6 +1,7 @@
 import { Form, Input, Modal, Select, Switch } from 'antd';
 import { useState } from 'react';
 
+import { registrableResourceKinds } from '../model/evaluation';
 import type { ResourceKind } from '../model/evaluation';
 
 import { AssertionModeField, CaseShapeField, JudgeSpecFields, StepJudgeFields, ToolSpecFields,
@@ -8,7 +9,8 @@ import { AssertionModeField, CaseShapeField, JudgeSpecFields, StepJudgeFields, T
 import { SessionScriptFields, type SessionTurnRow } from './SessionScriptFields';
 import { displayLabel } from './evaluationView';
 
-const resourceOptions = ['skill', 'agent', 'mcp', 'knowledge'].map((value) => ({ value, label: displayLabel(value) }));
+// 新建评测集仅限当前被测对象（agent/knowledge）：skill/mcp 已退出被测，历史套件只读。
+const resourceOptions = registrableResourceKinds.map((value) => ({ value, label: displayLabel(value) }));
 
 export interface CreateSuiteValues {
   resource_kind: ResourceKind; name: string; description?: string;

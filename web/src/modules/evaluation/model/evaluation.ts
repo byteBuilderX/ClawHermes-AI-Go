@@ -3,6 +3,16 @@ import { z } from 'zod';
 export const resourceKindSchema = z.enum(['skill', 'agent', 'mcp', 'knowledge']);
 export type ResourceKind = z.infer<typeof resourceKindSchema>;
 
+// registrableResourceKinds 是「可登记建档/发起评测」的被测类型：被测对象收敛后仅
+// agent 与 knowledge 两轨（skill 的评测本质是 agent 的评测，mcp 不再评测）。只用于
+// 新建/登记/默认过滤；历史响应中的 skill/mcp 仍经 resourceKindSchema 四值读回。
+export const registrableResourceKinds = ['agent', 'knowledge'] as const;
+export type RegistrableResourceKind = (typeof registrableResourceKinds)[number];
+
+// CenterKindFilter 是中心列表 resource_kind 过滤串：单值=历史语义（含 skill/mcp
+// 只读回溯），'agent,knowledge'=默认两轨聚合；空/undefined=全部。
+export type CenterKindFilter = ResourceKind | 'agent,knowledge';
+
 export const resourceRefSchema = z.object({
   kind: resourceKindSchema,
   resource_id: z.string(),
@@ -435,7 +445,7 @@ export const experimentCommandResponseSchema = z.object({
 }).strict();
 
 export interface EvaluationCenterFilters {
-  resource_kind?: ResourceKind;
+  resource_kind?: CenterKindFilter;
   resource_id?: string;
   status?: string;
   cursor?: string;

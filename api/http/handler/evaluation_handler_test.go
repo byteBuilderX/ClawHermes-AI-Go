@@ -64,6 +64,38 @@ func TestEvaluationHandlerCreateBaselineUsesTenantAndResourcePath(t *testing.T) 
 	}
 }
 
+// 被测收敛后建档仅支持 agent/knowledge；skill/mcp 直呼建档 API 应被 handler
+// allow-list 拒绝（403），且不触达 baseline service。
+func TestEvaluationHandlerCreateBaselineRejectsLegacyKinds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baselines := &fakeEvaluationBaselines{}
+	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, nil, nil, zap.NewNop()).
+		WithBaselineService(baselines)
+	r := gin.New()
+	r.Use(middleware.ErrorHandler(zap.NewNop()))
+	r.POST("/evaluations/resources/:kind/:id/baseline", withTenant("tenant-1"), h.CreateBaseline)
+
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{name: "skill withdrawn", kind: "skill"},
+		{name: "mcp withdrawn", kind: "mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+				"/evaluations/resources/"+tc.kind+"/"+tc.kind+"-1/baseline", nil))
+			if rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Body.String(), `{"error":`) {
+				t.Fatalf("unexpected response: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if baselines.kind != "" {
+		t.Fatalf("baseline service must not be invoked for legacy kinds: %+v", baselines)
+	}
+}
+
 func TestEvaluationHandlerGenerateOptimizationReturnsCandidates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	optimization := &fakeOptimizationService{}

@@ -16,12 +16,10 @@ import type { ResourceKind, ResourceSummary, RunSummary } from '../model/evaluat
 
 import { HealthTrendChart } from './HealthTrendChart';
 import type { HealthTrendPoint } from './HealthTrendChart';
-import { StatusTag, displayLabel, runDisplayStatus } from './evaluationView';
+import { StatusTag, kindFilterOptions, runDisplayStatus } from './evaluationView';
 
 import { EVALUATION_TREND_RUN_LIMIT } from '@/constants';
 import { extractErrorMessage } from '@/shared/lib';
-
-const kindOptions = ['skill', 'agent', 'mcp', 'knowledge'].map((value) => ({ value, label: displayLabel(value) }));
 
 // shortTrendTime 生成 x 轴短标签（MM-DD HH:mm），完整时间用于 tooltip/表格。
 function shortTrendTime(iso: string): string {
@@ -120,7 +118,7 @@ export const RuntimeHealthTrendPanel = ({ defaultKind, defaultResourceId }: {
   return (
     <div data-testid="runtime-health-trend-panel">
       <Space wrap style={{ marginBottom: 12 }}>
-        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindOptions}
+        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindFilterOptions}
           value={kind} loading={resourcesLoading}
           onChange={(value: ResourceKind | undefined) => { setKind(value); setResourceId(''); }} />
         <Select aria-label="资源" placeholder="选择资源以查看运行通过率趋势" style={{ width: 260 }} options={resources.map((item) => ({

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -54,6 +54,20 @@ vi.mock('../api/evaluation.api', async () => {
   const actual = await vi.importActual<typeof import('../api/evaluation.api')>('../api/evaluation.api');
   return { ...actual, evaluationApi: { ...actual.evaluationApi, listMonitorResources: monitorApi.listMonitorResources } };
 });
+// RegisterResourceModal 打开时会拉取可登记对象：agent=agentApi.list()（/agents），
+// knowledge=knowledgeApi.list()（/knowledge/workspaces）。登记流程的候选数据由组件自身
+// 单测覆盖；本页测试只需空响应，避免打开登记框触发真实 axios。spread actual 保留模块
+// 其余导出，防止其它渲染路径引用缺失字段。
+const agentList = vi.hoisted(() => vi.fn(async () => []));
+vi.mock('@/modules/agent/api/agent.api', async () => {
+  const actual = await vi.importActual<typeof import('@/modules/agent/api/agent.api')>('@/modules/agent/api/agent.api');
+  return { ...actual, agentApi: { ...actual.agentApi, list: agentList } };
+});
+const knowledgeList = vi.hoisted(() => vi.fn(async () => []));
+vi.mock('@/modules/knowledge/api/knowledge.api', async () => {
+  const actual = await vi.importActual<typeof import('@/modules/knowledge/api/knowledge.api')>('@/modules/knowledge/api/knowledge.api');
+  return { ...actual, knowledgeApi: { ...actual.knowledgeApi, list: knowledgeList } };
+});
 
 const emptyMonitorWindow = { items: [], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } };
 
@@ -90,18 +104,21 @@ describe('EvaluationCenterPage', () => {
     useCenter.mockClear();
   });
 
-  it('exposes only the three primary first-viewport decisions', () => {
+  it('exposes the primary first-viewport controls and the register entry for admins', () => {
     renderPage();
     expect(screen.getByRole('combobox', { name: '资源类型' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '资源状态' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /新建评测/ })).toBeInTheDocument();
+    // 被测收敛后统一建档入口落在评测中心（skill 工作台入口已移除）。
+    expect(screen.getByRole('button', { name: '登记被测资源' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '刷新' })).not.toBeInTheDocument();
   });
 
-  it('keeps new evaluation hidden for members while details remain available', () => {
+  it('keeps new evaluation and the register entry hidden for members while details remain available', () => {
     center.canManageEvaluation = false;
     renderPage();
     expect(screen.queryByRole('button', { name: /新建评测/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '登记被测资源' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '查看 skill-1' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '查看 skill-1' }));
     expect(screen.getByText('观测事实')).toBeInTheDocument();
@@ -113,9 +130,11 @@ describe('EvaluationCenterPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /新建评测/ }));
     fireEvent.click(screen.getByRole('radio', { name: '新建评测集' }));
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '目标资源' }));
-    expect(await screen.findByText('检索 MCP（mcp-1）')).toBeInTheDocument();
+    // 被测收敛后「新建评测」目标资源仅 agent/knowledge：skill/mcp 已退出建档不可再发起。
+    expect(await screen.findByText('客服 Agent（agent-1）')).toBeInTheDocument();
     expect(screen.getByText('产品知识库（knowledge-1）')).toBeInTheDocument();
-    fireEvent.click(await screen.findByText('客服 Agent（agent-1）'));
+    expect(screen.queryByText('检索 MCP（mcp-1）')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('客服 Agent（agent-1）'));
     fireEvent.change(screen.getByLabelText('评测集名称'), { target: { value: '客服基线评测' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '标准问候' } });
     fireEvent.change(screen.getByLabelText('测试输入'), { target: { value: '你好' } });
@@ -192,9 +211,14 @@ describe('EvaluationCenterPage', () => {
     expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: 'skill', resource_id: 'skill-1', status: undefined });
   });
 
-  it('ignores an unsupported resource kind without dropping the resource id', () => {
+  it('defaults to the agent+knowledge two tracks when no supported kind is in effect', () => {
+    renderPage('/evaluations');
+    expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: 'agent,knowledge', resource_id: undefined, status: undefined });
+  });
+
+  it('falls back to the agent+knowledge two tracks for an unsupported kind without dropping the resource id', () => {
     renderPage('/evaluations?kind=workflow&resource_id=resource-1');
-    expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: undefined, resource_id: 'resource-1', status: undefined });
+    expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: 'agent,knowledge', resource_id: 'resource-1', status: undefined });
   });
 
   it('keeps the resource deep link while changing kind and follows history navigation', async () => {
@@ -232,5 +256,29 @@ describe('EvaluationCenterPage', () => {
     await waitFor(() => expect(monitorApi.listMonitorResources).toHaveBeenCalledWith(expect.objectContaining({
       resource_kind: 'skill', resource_id: 'skill-1',
     })));
+  });
+
+  it('opens the register modal from the toolbar with agent as the default kind', async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('button', { name: '登记被测资源' }));
+    // 登记框在页面 Tag（Agent）外独立渲染，用 dialog 限定作用域断言类型默认 agent。
+    const dialog = await screen.findByRole('dialog', { name: '登记被测资源' });
+    expect(within(dialog).getByText('Agent')).toBeInTheDocument();
+    // 页面注入 onRegisterThenRun → 出现「登记并新建评测」快捷。
+    expect(within(dialog).getByRole('button', { name: '登记并新建评测' })).toBeInTheDocument();
+    // AntD 二字按钮自动插空格：主操作「登记」实为「登 记」。
+    expect(within(dialog).getByRole('button', { name: /^登\s*记$/ })).toBeInTheDocument();
+  });
+
+  it('opens the register modal prefilled from the deep link and consumes the action params', async () => {
+    renderPage('/evaluations?action=register&kind=knowledge&resource_id=kb-1');
+    // kind=knowledge 与 resource_id=kb-1 预填；知识库候选列表在空响应下正常就绪。
+    const dialog = await screen.findByRole('dialog', { name: '登记被测资源' });
+    expect(within(dialog).getByText('知识库')).toBeInTheDocument();
+    expect(within(dialog).getByText('kb-1')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '登记并新建评测' })).toBeInTheDocument();
+    // action/kind/resource_id 一次性消费，避免刷新反复弹窗。
+    await waitFor(() => expect(screen.getByRole('status', { name: '当前查询参数' }))
+      .not.toHaveTextContent('action=register'));
   });
 });

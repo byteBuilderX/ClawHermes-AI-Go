@@ -11,24 +11,27 @@ import { EvaluationMonitorPanel } from '../components/EvaluationMonitorPanel';
 import { EvaluationOverview } from '../components/EvaluationOverview';
 import { EvolutionCommandModal } from '../components/EvolutionCommandModal';
 import { ExperimentDrawer } from '../components/ExperimentDrawer';
+import { RegisterResourceModal } from '../components/RegisterResourceModal';
 import { ResourceTable } from '../components/ResourceTable';
 import ReviewPoolPanel from '../components/ReviewPoolPanel';
 import { RunDrawer } from '../components/RunDrawer';
 import { RuntimeHealthTrendPanel } from '../components/RuntimeHealthTrendPanel';
 import { SuitesPanel } from '../components/SuitesPanel';
 import { TimelineDrawer } from '../components/TimelineDrawer';
-import { StatusTag, displayLabel, drawerWidth, runDisplayStatus } from '../components/evaluationView';
+import { StatusTag, displayLabel, drawerWidth, kindFilterOptions, runDisplayStatus } from '../components/evaluationView';
 import { useEvaluationCenter } from '../hooks/useEvaluationCenter';
 import { useEvaluationTimeline } from '../hooks/useEvaluationTimeline';
 import { resourceKindSchema } from '../model/evaluation';
-import type { CandidateSummary, ExperimentSummary, ResourceKind, RunSummary } from '../model/evaluation';
+import type { CandidateSummary, CenterKindFilter, ExperimentSummary,
+  RegistrableResourceKind, ResourceKind, RunSummary } from '../model/evaluation';
 
 import { useResponsive } from '@/shared/hooks';
 import { extractErrorMessage } from '@/shared/lib';
 import { createIdempotencyKey } from '@/shared/lib/idempotencyKey';
 
-const resourceOptions = ['skill', 'agent', 'mcp', 'knowledge'].map((value) => ({ value, label: displayLabel(value) }));
 const statusOptions = ['active', 'proposed', 'promoted', 'running', 'succeeded', 'failed', 'paused'].map((value) => ({ value, label: displayLabel(value) }));
+const toRegistrableKind = (value: ResourceKind | undefined): RegistrableResourceKind | undefined =>
+  value === 'agent' || value === 'knowledge' ? value : undefined;
 const command = (version: number, reason: string) => ({ reason, expected_state_version: version,
   idempotency_key: createIdempotencyKey() });
 
@@ -39,8 +42,11 @@ export const EvaluationCenterPage = () => {
   const parsedKind = resourceKindSchema.safeParse(searchParams.get('kind'));
   const kind = parsedKind.success ? parsedKind.data : undefined;
   const filterResourceId = searchParams.get('resource_id')?.trim() || undefined;
+  // 被测收敛后中心默认并列 agent+knowledge 两轨：未显式选 kind 时以 CSV 聚合两轨；
+  // 显式选历史单值（skill/mcp）或单轨时以单值只读读回。
+  const centerKind: CenterKindFilter = kind ?? 'agent,knowledge';
   const [status, setStatus] = useState<string | undefined>();
-  const center = useEvaluationCenter({ resource_kind: kind, resource_id: filterResourceId, status });
+  const center = useEvaluationCenter({ resource_kind: centerKind, resource_id: filterResourceId, status });
   const [resourceId, setResourceId] = useState('');
   const [runId, setRunId] = useState('');
   const [candidateId, setCandidateId] = useState('');
@@ -49,6 +55,11 @@ export const EvaluationCenterPage = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [evolutionOpen, setEvolutionOpen] = useState(false);
   const [candidateEvaluationOpen, setCandidateEvaluationOpen] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  // URL 深链 / 外部入口预置的登记初值（kind+resource_id），供 RegisterResourceModal 预填。
+  const [registerInitial, setRegisterInitial] = useState<{ kind: RegistrableResourceKind; resource_id?: string }>();
+  // 「登记并新建评测」流程预选的目标资源，交由 CreateEvaluationModal focus 消费。
+  const [createFocus, setCreateFocus] = useState<{ kind: ResourceKind; resource_id: string }>();
   const resource = useMemo(() => center.resources.items.find((item) => item.id === resourceId) || null,
     [center.resources.items, resourceId]);
   const run = center.runs.items.find((item) => item.id === runId) || null;
@@ -85,18 +96,51 @@ export const EvaluationCenterPage = () => {
     setSearchParams(next);
   };
 
+  // 登记入口支持 URL 深链 ?action=register&kind=<agent|knowledge>&resource_id=<id>（供
+  // agent/知识库详情页跳转直达建档）：一次性消费后清除 action 参数避免刷新反复弹窗。
+  useEffect(() => {
+    if (searchParams.get('action') !== 'register') return;
+    const parsed = resourceKindSchema.safeParse(searchParams.get('kind'));
+    setRegisterInitial({
+      kind: toRegistrableKind(parsed.success ? parsed.data : undefined) ?? 'agent',
+      resource_id: searchParams.get('resource_id')?.trim() || undefined,
+    });
+    setRegisterOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('action'); next.delete('kind'); next.delete('resource_id');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  // 已登记的同轨资源（agent/knowledge），供登记框提示「重新建档刷新稳定版本」。
+  const registeredRows = useMemo(() => center.resources.items
+    .filter((item) => item.resource_kind === 'agent' || item.resource_kind === 'knowledge')
+    .map((item) => ({ kind: item.resource_kind as RegistrableResourceKind, resource_id: item.resource_id })),
+  [center.resources.items]);
+  const closeRegister = () => setRegisterOpen(false);
+  // 登记成功回调：刷新列表让新行出现；createBaseline 已弹成功提示。
+  const handleRegistered = () => { setRegisterOpen(false); void center.reload(); };
+  // 登记并新建评测：登记成功后预选该资源打开新建评测；focus 由 CreateEvaluationModal
+  // 在资源列表刷新后消费。center.reload() 内部吞错（错误落 center.error），不阻断流程。
+  const handleRegisterThenRun = (kind: RegistrableResourceKind, resourceId: string) => {
+    setRegisterOpen(false);
+    setCreateFocus({ kind, resource_id: resourceId });
+    setCreateOpen(true);
+    void center.reload();
+  };
+
   if (center.loading && !center.overview) return <Skeleton active />;
   return <div>
     <Flex justify="space-between" align="end" gap={16} wrap style={{ marginBottom: 12 }}>
       <div><Typography.Title level={4} style={{ margin: 0 }}>评测与进化中心</Typography.Title>
         <Typography.Text type="secondary">在同一记录簿中审阅版本证据与演进决定</Typography.Text></div>
       <Space wrap>
-        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={resourceOptions}
+        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindFilterOptions}
           value={kind} onChange={setKind} />
         <Select aria-label="资源状态" allowClear placeholder="资源状态" style={{ width: 132 }} options={statusOptions}
           value={status} onChange={setStatus} />
-        {center.canManageEvaluation && <Button type="primary" icon={<PlusOutlined />}
-          onClick={() => setCreateOpen(true)}>新建评测</Button>}
+        {center.canManageEvaluation && <>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateFocus(undefined); setCreateOpen(true); }}>新建评测</Button>
+          <Button onClick={() => { setRegisterInitial(undefined); setRegisterOpen(true); }}>登记被测资源</Button>
+        </>}
       </Space>
     </Flex>
     <EvaluationOverview overview={center.overview} />
@@ -146,7 +190,7 @@ export const EvaluationCenterPage = () => {
         () => center.rejectCandidate(value.id, command(value.state_version, '管理员拒绝候选版本')), '候选版本已拒绝')}
       onEvaluate={() => setCandidateEvaluationOpen(true)} />
     <CandidateEvaluationModal open={candidateEvaluationOpen} onClose={() => setCandidateEvaluationOpen(false)}
-      resourceKind={candidate?.resource_kind ?? 'skill'}
+      resourceKind={candidate?.resource_kind ?? 'agent'}
       onSubmit={async (suiteRevisionId, idempotencyKey) => {
         if (!candidate) throw new Error('候选版本已不可用');
         try {
@@ -166,8 +210,10 @@ export const EvaluationCenterPage = () => {
       onRollback={(value) => void decide(() => center.rollbackExperiment(value.id, command(value.state_version, '管理员回滚实验')), '实验已回滚')} />
     <TimelineDrawer events={timeline.events} open={timeline.open} loading={timeline.loading} error={timeline.error}
       isMobile={isMobile} onClose={timeline.closeTimeline} />
-    <CreateEvaluationModal open={createOpen} resources={center.resources.items} onClose={() => {
-      center.resetCreateEvaluation(); setCreateOpen(false);
+    <RegisterResourceModal open={registerOpen} initial={registerInitial} registered={registeredRows}
+      onClose={closeRegister} onRegistered={handleRegistered} onRegisterThenRun={handleRegisterThenRun} />
+    <CreateEvaluationModal open={createOpen} resources={center.resources.items} focusResource={createFocus} onClose={() => {
+      center.resetCreateEvaluation(); setCreateFocus(undefined); setCreateOpen(false);
     }}
       onSubmit={async (plan) => {
         try {
