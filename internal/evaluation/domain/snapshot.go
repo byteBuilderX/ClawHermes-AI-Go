@@ -31,6 +31,10 @@ type PinnedAssignments struct {
 	SkillAgentRevision map[string]string `json:"skill_agent_revision,omitempty"` // skillID → 承载 agent 锁定 revisionID
 	MCPRevisions       map[string]string `json:"mcp_revisions,omitempty"`        // serverID → 固定 revisionID
 	KnowledgeRevisions map[string]string `json:"knowledge_revisions,omitempty"`  // workspaceName → 固定 revisionID
+	// SkillRevisions 是 agent 评测锚定被测 agent 绑定 skill 的版本 pin：skillID →
+	// run 创建时点该 skill 当时生效的发布 revisionID（D7 扩展）。之后 skill 再
+	// 发版不影响已创建 run；旧 run（改动前创建）该 map 为 nil。
+	SkillRevisions map[string]string `json:"skill_revisions,omitempty"`
 }
 
 // EvaluationContextSnapshot 是评测 run 创建时点固化的全链路执行上下文快照。

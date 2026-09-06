@@ -558,7 +558,15 @@ func (h *EvaluationHandler) GetRun(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, run)
+	c.JSON(http.StatusOK, runDetailResponse{EvalRun: run, Anchors: domain.ResolveRunAnchors(run)})
+}
+
+// runDetailResponse 是 run 详情展示信封：嵌入 EvalRun 全字段并附一份平铺的
+// 锚定资源清单（anchors），供前端显式展示评测锚定的资源版本。旧 run 无快照
+// pin 时 anchors 仅含被测主体。
+type runDetailResponse struct {
+	domain.EvalRun
+	Anchors []domain.RunResourceAnchor `json:"anchors"`
 }
 
 func (h *EvaluationHandler) GenerateOptimization(c *gin.Context) {

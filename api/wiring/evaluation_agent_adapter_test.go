@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -568,6 +569,7 @@ func TestProjectExecutionSnapshot(t *testing.T) {
 		PinnedAssignments: evaldomain.PinnedAssignments{
 			MCPRevisions:       map[string]string{"mcp-server-1": "rev-mcp-1"},
 			KnowledgeRevisions: map[string]string{"workspace-a": "rev-know-1"},
+			SkillRevisions:     map[string]string{"skill-1": "rev-skill-1"},
 		},
 		Execution: []evaldomain.GroupSnapshot{
 			{GroupKey: evaldomain.GroupTrace, Values: map[string]any{"trace.capture_parameters": true}},
@@ -579,6 +581,8 @@ func TestProjectExecutionSnapshot(t *testing.T) {
 	require.Equal(t, 8192, es.OutputReserveTokens)
 	require.Equal(t, "rev-mcp-1", es.PinnedMCP["mcp-server-1"].RevisionID)
 	require.Equal(t, "rev-know-1", es.PinnedKnowledge["workspace-a"].RevisionID)
+	// skill pin 原样投影到 agent 消费侧。
+	require.Equal(t, "rev-skill-1", es.PinnedSkills["skill-1"])
 	// 仅 trace 组投影为 TraceParameters，其他组不进入。
 	require.Equal(t, true, es.TraceParameters["trace.capture_parameters"])
 	require.NotContains(t, es.TraceParameters, "agent.temperature")
@@ -596,6 +600,7 @@ func TestExecuteRevisionInjectsExecutionSnapshot(t *testing.T) {
 		PinnedAssignments: evaldomain.PinnedAssignments{
 			MCPRevisions:       map[string]string{"mcp-server-1": "rev-mcp-1"},
 			KnowledgeRevisions: map[string]string{"workspace-a": "rev-know-1"},
+			SkillRevisions:     map[string]string{"skill-1": "rev-skill-1"},
 		},
 		Execution: []evaldomain.GroupSnapshot{
 			{GroupKey: evaldomain.GroupTrace, Values: map[string]any{"trace.capture_parameters": true}},
@@ -608,17 +613,19 @@ func TestExecuteRevisionInjectsExecutionSnapshot(t *testing.T) {
 	require.Equal(t, 32768, executor.window)
 	require.Equal(t, 8192, executor.reserve)
 	require.Equal(t, "rev-mcp-1", executor.mcpPins["mcp-server-1"])
+	require.Equal(t, "rev-skill-1", executor.skillPins["skill-1"])
 	require.True(t, executor.meta.KnowledgeAssignmentsPinned)
 	require.Equal(t, "rev-know-1", executor.meta.PinnedKnowledgeRevisions["workspace-a"].RevisionID)
 	require.Equal(t, "rev-mcp-1", executor.meta.PinnedMCPRevisions["mcp-server-1"].RevisionID)
 }
 
 type snapshotCaptureAgentExecutor struct {
-	meta    agentapp.ExecMeta
-	hasSnap bool
-	window  int
-	reserve int
-	mcpPins map[string]string
+	meta      agentapp.ExecMeta
+	hasSnap   bool
+	window    int
+	reserve   int
+	mcpPins   map[string]string
+	skillPins map[string]string
 }
 
 func (e *snapshotCaptureAgentExecutor) SnapshotRevision(
@@ -639,6 +646,8 @@ func (e *snapshotCaptureAgentExecutor) ExecuteRevision(
 		for serverID, pin := range es.PinnedMCP {
 			e.mcpPins[serverID] = pin.RevisionID
 		}
+		e.skillPins = make(map[string]string, len(es.PinnedSkills))
+		maps.Copy(e.skillPins, es.PinnedSkills)
 	}
 	return &agentapp.AgentResult{Output: "ok"}, 1, nil
 }

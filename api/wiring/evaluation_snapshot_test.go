@@ -3,6 +3,7 @@ package wiring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -419,4 +420,77 @@ func TestCaptureSkillPinFailsClosedWhenBindingMissing(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no Agent bound")
+}
+
+// fakeSkillActivationResolver 是 agentport.SkillActivationResolver 的桩：按 ref
+// 返回固定的 skill→revision 目录，模拟 run 创建时点该 skill 的 active 发布版。
+type fakeSkillActivationResolver struct {
+	revisionBySkill map[string]string
+	err             error
+}
+
+func (f *fakeSkillActivationResolver) ResolveSkills(
+	_ context.Context, _ string, refs []agentport.SkillRevisionRef,
+) (map[string]agentport.SkillActivation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	catalog := make(map[string]agentport.SkillActivation, len(refs))
+	for _, ref := range refs {
+		rev, ok := f.revisionBySkill[ref.SkillID]
+		if !ok {
+			continue
+		}
+		catalog[ref.SkillID] = agentport.SkillActivation{SkillID: ref.SkillID, RevisionID: rev}
+	}
+	return catalog, nil
+}
+
+// TestSnapshotCapturerPinsBoundSkills 验证 agent 评测创建时把被测 agent 绑定的
+// enabled skill 锚定到当时生效发布版（SkillRevisions），disabled 与未发布（resolver
+// 未命中）的 skill 不 pin。
+func TestSnapshotCapturerPinsBoundSkills(t *testing.T) {
+	capturer, revisions := newSnapshotCapturerFixture(t)
+	revisions.revision.Bindings = append(revisions.revision.Bindings,
+		agentdomain.AgentBinding{Kind: agentdomain.AgentBindingSkill, ID: "skill-1", Enabled: true},
+		agentdomain.AgentBinding{Kind: agentdomain.AgentBindingSkill, ID: "skill-2", Enabled: true},
+		agentdomain.AgentBinding{Kind: agentdomain.AgentBindingSkill, ID: "skill-disabled", Enabled: false},
+	)
+	capturer.skills = &fakeSkillActivationResolver{revisionBySkill: map[string]string{
+		"skill-1": "skill-rev-7",
+		// skill-2 有绑定但无发布版：resolver 未命中 → 不 pin（fail-open）。
+	}}
+
+	snap, err := capturer.Capture(context.Background(), "tenant-1", evalport.CaptureInput{
+		Resource: evaldomain.ResourceRef{
+			Kind: evaldomain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1",
+		},
+		RequestedBy: "user-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	require.Equal(t, map[string]string{"skill-1": "skill-rev-7"}, snap.PinnedAssignments.SkillRevisions)
+	// MCP/Knowledge 既有 pin 不受影响。
+	require.Equal(t, map[string]string{"mcp-1": "mcp-rev-9"}, snap.PinnedAssignments.MCPRevisions)
+	require.Equal(t, map[string]string{"kb-1": "kb-rev-2"}, snap.PinnedAssignments.KnowledgeRevisions)
+}
+
+// TestSnapshotCapturerSkillPinFailsOpenOnResolveError 验证 skill resolver 读取失败
+// 时 warn 跳过、不阻断创建（与 MCP/Knowledge D4 fail-open 语义一致）。
+func TestSnapshotCapturerSkillPinFailsOpenOnResolveError(t *testing.T) {
+	capturer, revisions := newSnapshotCapturerFixture(t)
+	revisions.revision.Bindings = append(revisions.revision.Bindings,
+		agentdomain.AgentBinding{Kind: agentdomain.AgentBindingSkill, ID: "skill-1", Enabled: true},
+	)
+	capturer.skills = &fakeSkillActivationResolver{err: errors.New("db down")}
+
+	snap, err := capturer.Capture(context.Background(), "tenant-1", evalport.CaptureInput{
+		Resource: evaldomain.ResourceRef{
+			Kind: evaldomain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1",
+		},
+		RequestedBy: "user-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	require.Empty(t, snap.PinnedAssignments.SkillRevisions)
 }
