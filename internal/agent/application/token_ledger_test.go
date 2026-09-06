@@ -2,11 +2,9 @@ package application
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/byteBuilderX/stratum/internal/agent/domain/port"
-	"github.com/byteBuilderX/stratum/pkg/observability"
 	"github.com/byteBuilderX/stratum/pkg/tokenutil"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -14,17 +12,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// ledgerMetricsSpy 采集 TokenLedger 触发的 token 指标；embed NoopMetrics 满足
-// MetricsProvider 全接口，只 override 关心的方法（与 gateway_test 的 spy 同款）。
-type ledgerMetricsSpy struct {
-	observability.NoopMetrics
-	tokenUsage []string
-}
-
-func (s *ledgerMetricsSpy) IncLLMTokenUsage(model, tokenType string, count int64) {
-	s.tokenUsage = append(s.tokenUsage, fmt.Sprintf("%s|%s|%d", model, tokenType, count))
-}
 
 func newSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
@@ -39,8 +26,9 @@ func newSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	return recorder
 }
 
-// TestTokenLedger_Record 固定接线后的核心契约：返回真实成本（修复此前 Noop
-// 恒 0）、metrics 按 prompt/completion 打点、span 写出 token 属性。
+// TestTokenLedger_Record 固定 C1 去重后的核心契约：返回真实成本、span 写出
+// token/cost 属性（agent 侧执行证据，Opik re-pull 依赖）。Prometheus usage 打点
+// 已移出 ledger —— 由网关出站唯一记账（spec §11 D2①）。
 func TestTokenLedger_Record(t *testing.T) {
 	const (
 		model      = "qwen-turbo"
@@ -49,8 +37,7 @@ func TestTokenLedger_Record(t *testing.T) {
 		total      = 150
 	)
 	recorder := newSpanRecorder(t)
-	spy := &ledgerMetricsSpy{}
-	l := NewTokenLedger(spy, nil) // nil logger：debug 日志路径不炸
+	l := NewTokenLedger(nil) // nil logger：debug 日志路径不炸
 
 	spanCtx, span := otel.Tracer("test").Start(context.Background(), "llm-call")
 	gotTotal, gotCost := l.Record(spanCtx, model, port.TokenUsage{Prompt: prompt, Completion: completion, Total: total})
@@ -60,11 +47,6 @@ func TestTokenLedger_Record(t *testing.T) {
 	wantCost := tokenutil.CostUSD(prompt, completion, model)
 	require.InDelta(t, wantCost, gotCost, 1e-9)
 
-	require.ElementsMatch(t, []string{
-		"qwen-turbo|prompt|100",
-		"qwen-turbo|completion|50",
-	}, spy.tokenUsage)
-
 	spans := recorder.Ended()
 	require.Len(t, spans, 1)
 	attrs := spans[0].Attributes()
@@ -73,10 +55,9 @@ func TestTokenLedger_Record(t *testing.T) {
 	require.Contains(t, attrs, attribute.Float64("llm.cost_usd", wantCost))
 }
 
-// TestTokenLedger_Record_nilDeps 覆盖 metrics/span/logger 全 nil 的构建路径
-// （纯 NoopTokenRecorder 语义之外的真实零依赖路径），不得 panic。
+// TestTokenLedger_Record_nilDeps 覆盖 logger/span 全 nil 的构建路径，不得 panic。
 func TestTokenLedger_Record_nilDeps(t *testing.T) {
-	l := NewTokenLedger(nil, nil)
+	l := NewTokenLedger(nil)
 	total, cost := l.Record(context.Background(), "unknown-model", port.TokenUsage{Prompt: 10, Completion: 5, Total: 15})
 	require.Equal(t, 15, total)
 	require.Equal(t, 0.0, cost) // 未知名模型无定价 → 0
@@ -84,7 +65,7 @@ func TestTokenLedger_Record_nilDeps(t *testing.T) {
 
 // TestTokenLedger_Estimate 固定估算算法与 tokenutil 一致。
 func TestTokenLedger_Estimate(t *testing.T) {
-	l := NewTokenLedger(nil, nil)
+	l := NewTokenLedger(nil)
 	msgs := []port.LLMMessage{
 		{Role: "user", Content: "hello world"},
 		{Role: "assistant", Content: "hi"},

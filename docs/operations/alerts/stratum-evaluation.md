@@ -64,3 +64,73 @@ judge 外部依赖持续不可用（§11.2 judge 健康）。
 - 定位：查询 `eval_queue_backlog{queue="observation"}`，观察消费停滞来源（消费速率、落库链路）。
 - 确认：消费停滞将延迟观测落库与采样覆盖统计，先确认是消费端故障还是上游突发。
 - 处置：修复 observation consumer（重启/扩容/修落库），积压消化后告警自动恢复。
+
+<a id="stratum-eval-judge-below-threshold"></a>
+
+## StratumEvalJudgeBelowThreshold
+
+judge 单维度低于阈值（score < JudgeBelowThreshold）的跌阈判异升高。
+
+- 语义：`eval_gate_action_total{layer="detect",action="flag"}` 15 分钟 increase > 0，或
+  `eval_judge_score` 直方图 <0.5 尾部占比 > 30%（10 分钟窗口）触发；第一腿信号现网即燃
+  （applyAnomalyVerdict emit detect/flag，§3.2-①）。
+- 定位：查询 `eval_gate_action_total{layer="detect",action="flag"}` 与 `eval_judge_score`
+  直方图尾部，定位低分维度与 resource；到评测中心按 trace 下钻核对 judge 分数。
+- 处置：真能力退化 → 走参数/版本调整并回归验证；误报 → 复核 judge 阈值与评测量纲后调整
+  `evaluation.judge.*` 阈值。确认路径 = 评审池人工确认（§3.2-①）。
+
+<a id="stratum-eval-run-regression"></a>
+
+## StratumEvalRunRegression
+
+run 级回归劣化判异（相对基线 run 的维度 delta 跌破 `RunRegressionDeltaThreshold`）。
+
+- 语义：`eval_gate_action_total{layer="l2",action="regression"}` 15 分钟 increase > 0。
+  P2 该 label 值仅由发布哨兵判劣 emit（emit 点 Task 5），T13 确认 run 复用——规则先落、当前
+  只读待命；`{layer="l2",action="regression"}` 是 P2 新增 label 值，不新增 metric family。
+- 定位：查询该 counter 按 resource/suite_revision 分组定位劣化 run；对比 base vs current
+  run 的 `metrics.by_dimension`（纯函数 `application.CompareRunRegression`；基线为同 suite
+  revision 的同 resource 最近 completed run）。
+- 处置：真回归 → 走门禁流程（人工确认/回滚候选）；误报 → 核对基线选择与维度 delta 阈值。
+
+<a id="stratum-eval-rule-disabled"></a>
+
+## StratumEvalRuleDisabled
+
+规则护栏命中但未拦截：`evaluation.ruleguard.enabled=false` 但 `denylist` 非空（O4 检测恒开 + 执行受控的提示告警）。
+
+- 语义：任一 15 分钟窗口内 `eval_rule_hit_total{verdict="detected"}` 命中且持续 5 分钟触发。
+  verdict=detected 表示护栏「检测到但未拦截」；`StratumEvalRuleBlocked`（critical，verdict=block）
+  不受污染——disabled 命中不会误触 critical。
+- 定位：查询 `eval_rule_hit_total{verdict="detected"}` 按 `rule`/`resource` 分组，确认命中工具
+  是否本应禁用；比对平台参数 `evaluation.ruleguard.enabled` 与 `evaluation.ruleguard.denylist`
+  当前值（registry 平台级 low risk_tier）。
+- 确认：enabled=false 时 denylist 命中只产观测（评测侧判 VerdictBlock，属显式接受副作用），
+  不拦截执行——这与 O4「未启用规则 = 无规则可命中」语义一致，非执行故障。
+- 处置：命中工具应禁用 → 平台参数开启 `evaluation.ruleguard.enabled=true`，走平台参数发布审批，
+  随后回归验证命中即拦截；误报 → 收紧 `evaluation.ruleguard.denylist`。禁止远端手改（变更走
+  操作台/CD 流程）。
+
+<a id="stratum-eval-multitenant-verify-not-recovered"></a>
+
+## StratumEvalMultiTenantVerifyNotRecovered
+
+平台版本回滚后，multi-tenant verify 判定存在未恢复租户（critical，T4 红线级）。
+
+- 定位：查询 `eval_gate_action_total{layer="l3_multitenant_verify",action="not_recovered"}` 按租户维度下钻；
+  确认回滚动作（group_key/from_seq/to_seq）与受影响租户。
+- 确认：到该租户核对回滚目标 seq 下的 run 表现（`FindLatestCompletedRunForPlatformSeq` 锚定 to_seq）；
+  not_recovered = 回滚后（好版本）run 仍劣于回滚前（坏版本）run（run 级回归 Regressed=true）。
+- 处置：平台参数影响全租户，恢复不达标需人工介入——复核回滚目标是否为真「上一好版本」，必要时继续回滚到更早
+  版本或调整配置；处置动作走参数操作台与 CD，禁止远端手改。恢复后 not_recovered 计数停止增长即自动消除。
+
+<a id="stratum-eval-platform-multitenant-divergence"></a>
+
+## StratumEvalPlatformMultiTenantDivergence
+
+平台版本多租户验证分化（多数恢复 / 少数未恢复，warning，仅信号不自动处置）。
+
+- 语义：同一验证窗口内 recovered 与 not_recovered 并存 = 分布效应（多数改善、少数劣化），
+  可能源于租户规模/tier/流量差异（防辛普森悖论需分层归因）。
+- 定位：把 not_recovered 的租户名单按 tier/行业/流量规模分层下钻，找出劣化集中段。
+- 处置：仅告警，不自动回滚；人工在归因视图确认劣化是否真实能力退化，走参数调整/定向回滚流程。

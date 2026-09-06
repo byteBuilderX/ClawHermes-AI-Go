@@ -390,6 +390,46 @@
       "coverage": "short"
     },
     {
+      "id": "evaluation.route.evaluations.suites",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/suites",
+      "route": "/evaluations/suites",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/suites",
+      "browser_action_id": "evaluation.route.evaluations.suites",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/suites",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.route.evaluations.suites.id",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/suites/:id",
+      "route": "/evaluations/suites/:id",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/suites/:id",
+      "browser_action_id": "evaluation.route.evaluations.suites.id",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/suites/:id",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
       "id": "workflow.route.workflows",
       "domain": "workflow",
       "user_goal": "Open /workflows",
@@ -1452,6 +1492,66 @@
       "browser_action_id": "evaluation.mutation.post.evaluations.suites.suiteid.publish",
       "http_evidence": "The browser observes the expected successful response for POST /evaluations/suites/:suiteId/publish",
       "db_evidence": "Persisted state is reconciled after POST /evaluations/suites/:suiteId/publish",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.draft",
+      "domain": "evaluation",
+      "user_goal": "Complete POST /evaluations/suites/:suiteId/draft",
+      "route": "/evaluations/suites/:id",
+      "roles": {
+        "allowed": [
+          "tenant_admin"
+        ],
+        "denied": [
+          "member",
+          "unauthenticated"
+        ]
+      },
+      "mutation": "POST /evaluations/suites/:suiteId/draft",
+      "browser_action_id": "evaluation.mutation.post.evaluations.suites.suiteid.draft",
+      "http_evidence": "The browser observes the expected successful response for POST /evaluations/suites/:suiteId/draft",
+      "db_evidence": "Persisted state is reconciled after POST /evaluations/suites/:suiteId/draft",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.draft.cases",
+      "domain": "evaluation",
+      "user_goal": "Complete POST /evaluations/suites/:suiteId/draft/cases",
+      "route": "/evaluations/suites/:id",
+      "roles": {
+        "allowed": [
+          "tenant_admin"
+        ],
+        "denied": [
+          "member",
+          "unauthenticated"
+        ]
+      },
+      "mutation": "POST /evaluations/suites/:suiteId/draft/cases",
+      "browser_action_id": "evaluation.mutation.post.evaluations.suites.suiteid.draft.cases",
+      "http_evidence": "The browser observes the expected successful response for POST /evaluations/suites/:suiteId/draft/cases",
+      "db_evidence": "Persisted state is reconciled after POST /evaluations/suites/:suiteId/draft/cases",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.mutation.delete.evaluations.suites.suiteid.draft.cases.caseid",
+      "domain": "evaluation",
+      "user_goal": "Complete DELETE /evaluations/suites/:suiteId/draft/cases/:caseId",
+      "route": "/evaluations/suites/:id",
+      "roles": {
+        "allowed": [
+          "tenant_admin"
+        ],
+        "denied": [
+          "member",
+          "unauthenticated"
+        ]
+      },
+      "mutation": "DELETE /evaluations/suites/:suiteId/draft/cases/:caseId",
+      "browser_action_id": "evaluation.mutation.delete.evaluations.suites.suiteid.draft.cases.caseid",
+      "http_evidence": "The browser observes the expected successful response for DELETE /evaluations/suites/:suiteId/draft/cases/:caseId",
+      "db_evidence": "Persisted state is reconciled after DELETE /evaluations/suites/:suiteId/draft/cases/:caseId",
       "coverage": "short"
     },
     {

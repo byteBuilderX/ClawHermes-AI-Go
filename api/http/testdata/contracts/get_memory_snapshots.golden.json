@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default-unauth",
+    "method": "GET",
+    "path": "/memory/snapshots",
+    "body": {
+      "error": "missing bearer token"
+    },
+    "want_status": 401
+  }
+]

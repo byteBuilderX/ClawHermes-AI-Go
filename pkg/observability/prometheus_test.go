@@ -59,7 +59,7 @@ func TestPrometheusAllMethodsSmoke(t *testing.T) {
 	m.IncHermesEvent("created")
 	m.IncHermesEventProcessed("created", "ok")
 
-	m.IncAgentTaskCompleted("a1", "chat", "research", "ok")
+	m.IncAgentTaskCompleted("a1", "chat", "research", "ok", "tenant-1")
 	m.RecordAgentTaskLatency("a1", "research", 30.0)
 	m.RecordAgentCostPerTask("a1", "research", 0.05)
 	m.RecordAgentEvalScore("a1", "accuracy", 0.9)
@@ -190,7 +190,7 @@ func TestNoopMetricsSafeForAllMethods(t *testing.T) {
 	nm.DecKnowledgeIngestInFlight()
 	nm.IncHermesEvent("e")
 	nm.IncHermesEventProcessed("e", "ok")
-	nm.IncAgentTaskCompleted("a", "t", "k", "ok")
+	nm.IncAgentTaskCompleted("a", "t", "k", "ok", "tenant-1")
 	nm.RecordAgentTaskLatency("a", "k", 1)
 	nm.RecordAgentCostPerTask("a", "k", 1)
 	nm.RecordAgentEvalScore("a", "m", 1)
@@ -283,4 +283,36 @@ func TestPrometheusMetricsEvalObservationP1b(t *testing.T) {
 	assertCounterVecSum(t, families, "eval_behavior_anomaly_total", "signal", "judge_below_threshold", 1)
 	assertCounterVecSum(t, families, "eval_gate_action_total", "action", "block", 1)
 	assertGaugeVecSum(t, families, "eval_sample_coverage", "resource", "agent", 0.5)
+}
+
+// TestAgentTaskCompletedTenantLabel 防 C2 回归：tenant_id label 必须落真实值，
+// 且不会产生空串 label 的孤儿 series。
+func TestAgentTaskCompletedTenantLabel(t *testing.T) {
+	m := newTestMetrics(t)
+	m.IncAgentTaskCompleted("a1", "react", "react", "ok", "tenant-9")
+
+	families, err := m.reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != "agent_task_completed_total" {
+			continue
+		}
+		if len(f.Metric) != 1 {
+			t.Fatalf("want exactly 1 series, got %d", len(f.Metric))
+		}
+		labels := map[string]string{}
+		for _, lp := range f.Metric[0].Label {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		if labels["tenant_id"] != "tenant-9" {
+			t.Fatalf("tenant_id = %q, want tenant-9", labels["tenant_id"])
+		}
+		if got := f.Metric[0].GetCounter().GetValue(); got != 1 {
+			t.Fatalf("count = %v, want 1", got)
+		}
+		return
+	}
+	t.Fatal("agent_task_completed_total not gathered")
 }

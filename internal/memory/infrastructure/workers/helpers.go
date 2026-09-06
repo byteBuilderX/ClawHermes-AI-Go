@@ -5,8 +5,26 @@ import (
 	"time"
 
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"go.uber.org/zap"
 )
+
+// logModelConfigError 记录一次记忆模型参数配置失败并计数（stage 标识消费组件）。
+// err 非 *modelconfig.Err 时为空操作（不吞普通错误、不伪造计数）；logger 可为
+// nil（LLMHistorySummarizer 未注入 logger 时仅计数）。
+func logModelConfigError(logger *zap.Logger, stage string, err error) {
+	ce, ok := modelconfig.AsConfigError(err)
+	if !ok {
+		return
+	}
+	modelconfig.IncError(ce.Key, stage, ce.State)
+	if logger != nil {
+		logger.Error("memory.modelconfig.config_error",
+			zap.String("param", ce.Key),
+			zap.String("config_state", string(ce.State)),
+			zap.Error(err))
+	}
+}
 
 // resolvePlatformString resolves a platform string param through r, returning
 // def when r is nil, the key is unset, or resolution fails. Shared by the

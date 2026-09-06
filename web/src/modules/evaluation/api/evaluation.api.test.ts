@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { evaluationApi } from './evaluation.api';
 
-const client = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+const client = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 vi.mock('@/services/client', () => ({ default: client }));
 
 describe('evaluation center api', () => {
-  beforeEach(() => { client.get.mockReset(); client.post.mockReset(); });
+  beforeEach(() => { client.get.mockReset(); client.post.mockReset(); client.put.mockReset(); client.delete.mockReset(); });
 
   it.each([
     ['getOverview', '/evaluations/overview', undefined, { resources: 0, suites: 0, runs: 0, candidates: 0, experiments: 0 }],
@@ -37,6 +37,21 @@ describe('evaluation center api', () => {
     await evaluationApi.createSuite({ name: 'Agent 基线', resourceKind: 'agent', cases: [] });
     expect(client.post).toHaveBeenCalledWith('/evaluations/suites', {
       name: 'Agent 基线', resource_kind: 'agent', cases: [],
+    });
+  });
+
+  it('updates a session draft case with the full script and omits single-turn input', async () => {
+    client.put.mockResolvedValue({ data: {
+      id: 'c4', name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] },
+    } });
+    await evaluationApi.updateDraftCase('s1', 'c4', {
+      name: '退货会话', expectedOutput: '已受理退款', assertionMode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] },
+    });
+    expect(client.put).toHaveBeenCalledWith('/evaluations/suites/s1/draft/cases/c4', {
+      name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] },
     });
   });
 
@@ -93,4 +108,89 @@ describe('evaluation center api', () => {
       })).rejects.toThrow();
     },
   );
+
+  it('lists monitor resources with the window and limit forwarded as query params', async () => {
+    const data = { items: [], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } };
+    client.get.mockResolvedValue({ data });
+    const page = await evaluationApi.listMonitorResources({ resource_kind: 'skill', from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z', limit: 20 });
+    expect(client.get).toHaveBeenCalledWith('/evaluations/monitoring/resources', {
+      params: { resource_kind: 'skill', from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z', limit: 20 },
+    });
+    expect(page.window.from).toBe('2026-08-27T00:00:00Z');
+  });
+
+  it('fetches the per-resource trend through the trend endpoint', async () => {
+    const data = { resource_kind: 'skill', resource_id: 'skill-a', series: [], runs: [] };
+    client.get.mockResolvedValue({ data });
+    const trend = await evaluationApi.getMonitorTrend({ resource_kind: 'skill', resource_id: 'skill-a', from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' });
+    expect(client.get).toHaveBeenCalledWith('/evaluations/monitoring/resources/trend', {
+      params: { resource_kind: 'skill', resource_id: 'skill-a', from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' },
+    });
+    expect(trend.runs).toEqual([]);
+  });
+
+  it('reads the suite detail header through GET /suites/:id', async () => {
+    client.get.mockResolvedValue({ data: {
+      id: 'suite-1', name: '投诉基线', description: '', resource_kind: 'skill', status: 'active',
+      active_revision_id: 'rev-v3', draft_revision_id: 'rev-draft',
+      active_version_no: 3, draft_version_no: 0, active_case_count: 7, draft_case_count: 2,
+      created_by: 'user-1', created_at: '2026-09-01T00:00:00Z',
+    } });
+    const detail = await evaluationApi.getSuiteDetail('suite/1');
+    expect(client.get).toHaveBeenCalledWith('/evaluations/suites/suite%2F1');
+    expect(detail.active_version_no).toBe(3);
+    expect(detail.draft_case_count).toBe(2);
+  });
+
+  it('lists the lightweight version chain through GET /suites/:id/versions', async () => {
+    client.get.mockResolvedValue({ data: [
+      { id: 'rev-v2', version_no: 2, status: 'published', resource_kind: 'skill',
+        created_by: 'user-1', published_at: '2026-08-20T00:00:00Z', enabled_case_count: 7 },
+      { id: 'rev-draft', status: 'draft', resource_kind: 'skill', created_by: 'user-1', enabled_case_count: 2 },
+    ] });
+    const metas = await evaluationApi.listSuiteVersions('suite-1');
+    expect(client.get).toHaveBeenCalledWith('/evaluations/suites/suite-1/versions');
+    expect(metas).toHaveLength(2);
+    expect(metas[0].version_no).toBe(2);
+    expect(metas[1].status).toBe('draft');
+  });
+
+  it('loads a full published revision through GET /suites/:id/versions/:revisionId', async () => {
+    client.get.mockResolvedValue({ data: { id: 'rev-v2', suite_id: 'suite-1', version_no: 2,
+      status: 'published', resource_kind: 'skill', cases: [{ name: '物流', input: '快递没更新',
+        expected_output: '物流', assertion_mode: 'contains', enabled: true }] } });
+    const revision = await evaluationApi.getSuiteRevision('suite-1', 'rev-v2');
+    expect(client.get).toHaveBeenCalledWith('/evaluations/suites/suite-1/versions/rev-v2');
+    expect(revision.version_no).toBe(2);
+    expect(revision.cases[0].name).toBe('物流');
+  });
+
+  it('appends a session draft case through POST /suites/:id/draft/cases', async () => {
+    client.post.mockResolvedValue({ data: { id: 'c5', name: '退货会话', expected_output: '已受理退款',
+      assertion_mode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] } } });
+    const created = await evaluationApi.addDraftCase('suite-1', {
+      name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] },
+    });
+    expect(client.post).toHaveBeenCalledWith('/evaluations/suites/suite-1/draft/cases', {
+      name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: { goal: '处理退货', turns: [{ user: '快递没到' }] },
+    });
+    expect(created.id).toBe('c5');
+  });
+
+  it('deletes a draft case through DELETE /suites/:id/draft/cases/:caseId', async () => {
+    client.delete.mockResolvedValue({});
+    await evaluationApi.deleteDraftCase('suite-1', 'c5');
+    expect(client.delete).toHaveBeenCalledWith('/evaluations/suites/suite-1/draft/cases/c5');
+  });
+
+  it('starts the next draft through POST /suites/:id/draft', async () => {
+    client.post.mockResolvedValue({ data: { id: 'rev-draft', suite_id: 'suite-1', status: 'draft',
+      resource_kind: 'skill', cases: [] } });
+    const draft = await evaluationApi.startNextDraft('suite-1');
+    expect(client.post).toHaveBeenCalledWith('/evaluations/suites/suite-1/draft');
+    expect(draft.status).toBe('draft');
+  });
 });

@@ -28,6 +28,23 @@ var allowedPromptFields = map[string]struct{}{
 	"memory_enrichment_prompt": {},
 }
 
+// IsGridSearchableParameter reports whether key belongs to the automatic
+// grid-search parameter space (allowedParameterFields). Prompt fields are
+// deliberately absent — ValidatePromptPatch is their patch gate, and feeding
+// a prompt key into GenerateParameterPatches must fail closed.
+func IsGridSearchableParameter(key string) bool {
+	_, ok := allowedParameterFields[key]
+	return ok
+}
+
+// IsPromptTunableField reports whether key belongs to the prompt-rewrite
+// allowlist (allowedPromptFields). Prompt rewrites are LLM-driven and never
+// enter the grid-search patch space.
+func IsPromptTunableField(key string) bool {
+	_, ok := allowedPromptFields[key]
+	return ok
+}
+
 func GenerateParameterPatches(searchSpace map[string][]any) ([]map[string]any, error) {
 	if len(searchSpace) == 0 {
 		return nil, errors.New("parameter search space required")

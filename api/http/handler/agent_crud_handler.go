@@ -197,6 +197,23 @@ func (h *AgentHandler) ListAgentVersions(c *gin.Context) {
 	c.JSON(http.StatusOK, AgentVersionsResponse{Versions: out})
 }
 
+// GetAgentVersion returns one historical version's full content snapshot
+// (metadata + payload) for the "detail" drawer to diff field before/after
+// values against the direct parent version. Not-found maps 404 via the
+// unified error middleware.
+func (h *AgentHandler) GetAgentVersion(c *gin.Context) {
+	if _, ok := tenantIDFromCtx(c); !ok {
+		respondMissingTenant(c)
+		return
+	}
+	content, err := h.svc.GetVersion(c.Request.Context(), c.Param("id"), c.Param("versionID"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, agentVersionContentToResponse(content))
+}
+
 // RollbackAgent restores a deprecated historical version, repointing the
 // agent to it immediately without creating a new version. Returns the fresh
 // agent config so the client can re-render in place.

@@ -89,6 +89,14 @@ export const EVALUATION_MAX_CALLS_LIMIT = 50;
 // 评测运行通过率趋势面板拉取最近运行的分页条数（listRuns limit）。仅展示最近 N 次，
 // 后端返回 next_cursor 时前端显式标注「存在更早记录」，不滚动加载暗示全量。
 export const EVALUATION_TREND_RUN_LIMIT = 100;
+// 评测监控面板（EvaluationCenterPage「监控」tab）行为边界（spec 2026-09-03 §4.3）：
+// 默认窗口天数前端自持（后端 pkg/constants EvalMonitorWindowDays=7 为权威兜底，
+// 两端各持默认值并在 UI 明示）；资源行 limit 与后端默认 20 保持一致，用于显式传参
+// 并推断「仅显示观测最多的前 N 资源」截断。
+export const EVALUATION_MONITOR_DEFAULT_WINDOW_DAYS = 7;
+export const EVALUATION_MONITOR_RESOURCE_LIMIT = 20;
+// RangePicker 快捷预设（近 N 天含端点）；N 本身即行为数字，禁止散落组件。
+export const EVALUATION_MONITOR_WINDOW_PRESETS_DAYS = [7, 14, 30] as const;
 // 失败归因报告「系统性模式」的批次数阈值：失败 case 数 ≥ 该值才标「系统性」。
 // §9 服务端落地后改由服务端 systematic 信号替代。
 export const EVALUATION_ATTRIBUTION_SYSTEMATIC_MIN_CASES = 2;

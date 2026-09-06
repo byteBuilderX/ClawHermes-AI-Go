@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/byteBuilderX/stratum/internal/memory/domain"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 )
 
 const testReflectionPrompt = "你是轨迹反思助手。输入工具调用骨架 JSON。过滤临时查询与试错噪声。" +
@@ -14,6 +15,7 @@ const testReflectionPrompt = "你是轨迹反思助手。输入工具调用骨�
 func newConfiguredReflector(llm *extractorLLMStub, extra map[string]any) *TrajectoryReflector {
 	vals := map[string]any{
 		"memory.reflection_prompt": testReflectionPrompt,
+		"memory.reflection_model":  "test-model",
 	}
 	for k, v := range extra {
 		vals[k] = v
@@ -65,5 +67,31 @@ func TestTrajectoryReflector_AllInvalidTriggersRetryError(t *testing.T) {
 	sk := domain.TrajectorySkeleton{ExecutionID: "e1", Steps: []domain.TrajectoryStep{{ToolName: "search", Status: domain.TrajectoryStepStatusSuccess}}}
 	if _, err := r.Reflect(context.Background(), "t1", sk, ""); err == nil {
 		t.Fatal("all-invalid entries must produce retry error")
+	}
+}
+
+// TestTrajectoryReflector_FailsClosedWithoutModel 验证 memory.reflection_model
+// 缺失即 fail-closed：Reflect 返回 *modelconfig.Err(missing)，不发起 LLM 调用。
+func TestTrajectoryReflector_FailsClosedWithoutModel(t *testing.T) {
+	llm := &extractorLLMStub{content: `[]`}
+	r := NewTrajectoryReflector(llm)
+	r.SetTenantID("t1")
+	r.SetParamResolver(keyedResolverStub{vals: map[string]any{
+		"memory.reflection_prompt": testReflectionPrompt,
+	}})
+	sk := domain.TrajectorySkeleton{ExecutionID: "e1", Steps: []domain.TrajectoryStep{{ToolName: "search", Status: domain.TrajectoryStepStatusSuccess}}}
+	_, err := r.Reflect(context.Background(), "t1", sk, "")
+	if err == nil {
+		t.Fatal("missing memory.reflection_model must fail closed")
+	}
+	ce, ok := modelconfig.AsConfigError(err)
+	if !ok {
+		t.Fatalf("expected *modelconfig.Err, got %v", err)
+	}
+	if ce.State != modelconfig.StateMissing || ce.Key != modelconfig.KeyReflectionModel {
+		t.Fatalf("state/key = %s/%s, want missing/%s", ce.State, ce.Key, modelconfig.KeyReflectionModel)
+	}
+	if llm.model != "" {
+		t.Fatalf("no LLM call must be issued on config failure, got model %q", llm.model)
 	}
 }

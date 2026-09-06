@@ -6,6 +6,7 @@ import {
   queryResultSchema,
   workspaceSchema,
   workspaceStatsSchema,
+  workspaceVersionDetailSchema,
   workspaceVersionSchema,
   type CreateWorkspaceInput,
   type DocumentAccessInput,
@@ -15,6 +16,7 @@ import {
   type Workspace,
   type WorkspaceStats,
   type WorkspaceVersion,
+  type WorkspaceVersionDetail,
 } from '../model/knowledge';
 
 import api from '@/services/client';
@@ -90,6 +92,12 @@ export const knowledgeApi = {
   listVersions: async (name: string): Promise<WorkspaceVersion[]> => {
     const res = await api.get(`/knowledge/workspaces/${encodeURIComponent(name)}/versions`);
     return z.array(workspaceVersionSchema).parse(res.data?.versions ?? []);
+  },
+  // 单版本内容：列表元数据 + 整份编辑面 payload（name/description/config 键）。
+  // 「详情」Drawer 取点击版与其直父(parentVersionId)两次内容现算字段前后值。
+  getVersion: async (name: string, versionId: string): Promise<WorkspaceVersionDetail> => {
+    const res = await api.get(`/knowledge/workspaces/${encodeURIComponent(name)}/versions/${encodeURIComponent(versionId)}`);
+    return workspaceVersionDetailSchema.parse(res.data ?? {});
   },
   rollback: async (name: string, versionId: string): Promise<void> => {
     await api.post(`/knowledge/workspaces/${encodeURIComponent(name)}/rollback`, { versionId });

@@ -1,0 +1,11 @@
+[
+  {
+    "name": "authenticated-success",
+    "method": "POST",
+    "path": "/admin/models",
+    "want_status": 400,
+    "want_body": {
+      "error": "EOF"
+    }
+  }
+]

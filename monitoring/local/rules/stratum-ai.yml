@@ -372,3 +372,50 @@ groups:
           description: More than 10 route fallbacks in the last fifteen minutes ({{ $labels.from_model }} -> {{ $labels.to_model }}, increase {{ $value }}).
           dashboard_url: /d/stratum-service-overview
           runbook_url: /docs/operations/alerts/business.md#route-fallback-surge
+
+  # memory 模型参数强制化告警：必需模型参数（platform 层 7 个 memory.*_model）
+  # 缺失/指向未启用模型时，运行期 fail-closed + 探针周期完备性上报。与流量无关，
+  # 即使零流量也持续亮灯，直到运维补齐配置或关闭对应消费组件。
+  - name: stratum-memory-model-config
+    rules:
+      - alert: StratumMemoryModelParamMissing
+        expr: memory_model_config_health{state="missing"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          service: stratum
+          environment: production
+          component: memory
+        annotations:
+          summary: 必需 memory 模型参数未配置
+          description: Memory 必需模型参数 {{ $labels.param }} 为空/未配置，运行期将 fail-closed。
+          dashboard_url: /d/stratum-service-overview
+          runbook_url: /docs/operations/alerts/business.md#memory-model-param-missing
+
+      - alert: StratumMemoryModelParamDisabled
+        expr: memory_model_config_health{state="disabled"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          service: stratum
+          environment: production
+          component: memory
+        annotations:
+          summary: 必需 memory 模型参数指向未启用模型
+          description: Memory 必需模型参数 {{ $labels.param }} 配置的模型不在 enabled 目录，运行期将 fail-closed。
+          dashboard_url: /d/stratum-service-overview
+          runbook_url: /docs/operations/alerts/business.md#memory-model-param-disabled
+
+      - alert: StratumMemoryModelConfigFailed
+        expr: increase(memory_model_config_errors_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: stratum
+          environment: production
+          component: memory
+        annotations:
+          summary: 记忆步骤因模型配置缺失 fail-closed
+          description: Memory {{ $labels.stage }} 因 {{ $labels.param }} {{ $labels.state }} 失败 {{ $value }} 次。
+          dashboard_url: /d/stratum-service-overview
+          runbook_url: /docs/operations/alerts/business.md#memory-model-config-failed

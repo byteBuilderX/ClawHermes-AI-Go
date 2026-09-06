@@ -1,0 +1,629 @@
+{
+  "schema_version": 2,
+  "source_digest": "9f6cd6bc281233c3269197e7408ada535573f2def23898164366fc1d63f258c1",
+  "manifest_digest": "82ead8038e80ef2da03284460d6d5399d0c3d47d13f09e10ea3c9d5eb324f8cb",
+  "policy_manifest_digest": "bdb04afb6259aae36d41f861039d5f4b476ed3e33aaa2e7a47cded0ba74f59ce",
+  "tested_git_parent": "3b46a24c6f8b02257b3d3c56a9c91568bc40e039",
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "mode": "soak",
+  "acceptance_profile": "test",
+  "seed": 1,
+  "started_at": "2026-09-05T12:34:14.88Z",
+  "duration_seconds": 618,
+  "host_class": "developer",
+  "packs": [
+    {
+      "id": "agent",
+      "status": "passed"
+    },
+    {
+      "id": "agent-context",
+      "status": "passed"
+    },
+    {
+      "id": "agent-skill-mcp",
+      "status": "passed"
+    },
+    {
+      "id": "audit",
+      "status": "passed"
+    },
+    {
+      "id": "collab",
+      "status": "passed"
+    },
+    {
+      "id": "dashboard",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation-promotion",
+      "status": "passed"
+    },
+    {
+      "id": "iam",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin",
+      "status": "passed"
+    },
+    {
+      "id": "mcp",
+      "status": "passed"
+    },
+    {
+      "id": "memory",
+      "status": "passed"
+    },
+    {
+      "id": "operation-gate",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task",
+      "status": "passed"
+    },
+    {
+      "id": "skill",
+      "status": "passed"
+    },
+    {
+      "id": "workflow",
+      "status": "passed"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "agent.mutation.delete.agents.id",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.delete.conversations.convid",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.patch.conversations.convid",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.agentid.conversations",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.id.execute",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.id.execute.stream",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.id.request.editor",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.id.self.modify",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.agents.tool.approvals.id.decision",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.post.conversations.convid.messages",
+      "status": "passed"
+    },
+    {
+      "id": "agent.mutation.put.agents.id",
+      "status": "passed"
+    },
+    {
+      "id": "agent.route.agents",
+      "status": "passed"
+    },
+    {
+      "id": "agent.route.agents.create",
+      "status": "passed"
+    },
+    {
+      "id": "agent.route.agents.id.edit",
+      "status": "passed"
+    },
+    {
+      "id": "agent.route.chat",
+      "status": "passed"
+    },
+    {
+      "id": "audit.route.audit",
+      "status": "passed"
+    },
+    {
+      "id": "collab.mutation.post.collaborations",
+      "status": "passed"
+    },
+    {
+      "id": "collab.mutation.post.collaborations.id.cancel",
+      "status": "passed"
+    },
+    {
+      "id": "collab.mutation.post.collaborations.id.start",
+      "status": "passed"
+    },
+    {
+      "id": "collab.route.collaborations",
+      "status": "passed"
+    },
+    {
+      "id": "dashboard.route.overview",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.delete.evaluations.suites.suiteid.draft.cases.caseid",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.get.evaluations.review",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.get.evaluations.review.id",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.candidates.candidateid.reject",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.pause",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.promote",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.rollback",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.feedback",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.optimizations",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.review.id.decision",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.runs",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.draft",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.draft.cases",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.publish",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.route.evaluations",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.route.evaluations.suites",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.route.evaluations.suites.id",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.delete.admin.tenants.tenantid",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.delete.tenant",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.delete.tenant.members.userid",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.patch.admin.tenants.tenantid",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.patch.tenant.members.userid.role",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.patch.tenant.settings",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.admin.tenants",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.create.tenant",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.guest",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.logout",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.oauth.exchange",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.refresh",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.register",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.auth.switch.tenant",
+      "status": "passed"
+    },
+    {
+      "id": "iam.mutation.post.tenant.members.invite",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.admin.tenants",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.auth.callback",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.login",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.onboarding",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.tenant.members",
+      "status": "passed"
+    },
+    {
+      "id": "iam.route.tenant.settings",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.delete.knowledge.workspaces.name",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.delete.knowledge.workspaces.name.documents.documentid",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.get.knowledge.workspaces.name.versions",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.patch.knowledge.workspaces.name",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.post.knowledge.ingest",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.post.knowledge.query",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.post.knowledge.workspaces",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.post.knowledge.workspaces.name.rollback",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.mutation.undo.knowledge.workspaces.name",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.route.knowledge",
+      "status": "passed"
+    },
+    {
+      "id": "knowledge.route.knowledge.name",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.delete.admin.providers.id",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.patch.admin.models.id.toggle",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.post.admin.providers",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.post.admin.providers.id.discover",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.put.admin.models.id",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.mutation.put.admin.providers.id",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.route.admin.settings",
+      "status": "passed"
+    },
+    {
+      "id": "llm-admin.route.models",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.delete.mcp.servers.id",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.delete.mcp.servers.id.config",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.post.mcp.servers",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.post.mcp.servers.id.reconnect",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.put.mcp.servers.id",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.mutation.put.mcp.tool.policies.serverid.toolname",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.route.mcp",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.route.mcp.create",
+      "status": "passed"
+    },
+    {
+      "id": "mcp.route.mcp.id.edit",
+      "status": "passed"
+    },
+    {
+      "id": "memory.mutation.delete.memory.clear",
+      "status": "passed"
+    },
+    {
+      "id": "memory.mutation.delete.memory.fact",
+      "status": "passed"
+    },
+    {
+      "id": "memory.route.memory",
+      "status": "passed"
+    },
+    {
+      "id": "operation-gate.mutation.post.operation.proposals.id.approve",
+      "status": "passed"
+    },
+    {
+      "id": "operation-gate.mutation.post.operation.proposals.id.reject",
+      "status": "passed"
+    },
+    {
+      "id": "operation-gate.mutation.post.operation.proposals.id.review",
+      "status": "passed"
+    },
+    {
+      "id": "operation-gate.route.operation.proposals",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task.mutation.create",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task.mutation.delete",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task.mutation.enable",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task.mutation.update",
+      "status": "passed"
+    },
+    {
+      "id": "scheduled-task.route.scheduled.tasks",
+      "status": "passed"
+    },
+    {
+      "id": "skill.mutation.delete.skills.id",
+      "status": "passed"
+    },
+    {
+      "id": "skill.mutation.post.skills",
+      "status": "passed"
+    },
+    {
+      "id": "skill.mutation.post.skills.id.draft",
+      "status": "passed"
+    },
+    {
+      "id": "skill.mutation.post.skills.id.publish",
+      "status": "passed"
+    },
+    {
+      "id": "skill.route.skills",
+      "status": "passed"
+    },
+    {
+      "id": "skill.route.skills.create",
+      "status": "passed"
+    },
+    {
+      "id": "skill.route.skills.id.workspace",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.delete.workflows.workflowid",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.approvals.approvalid.decision",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.runs",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.runs.runid.cancel",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.runs.runid.manual.interventions.effectid.resolve",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.runs.runid.pause",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflow.runs.runid.resume",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflows",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflows.workflowid.publish",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.post.workflows.workflowid.validate",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.mutation.put.workflows.workflowid.draft",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflow.runs",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflow.runs.runid",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflows",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflows.id.edit",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflows.id.run",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflows.id.versions.versionid",
+      "status": "passed"
+    },
+    {
+      "id": "workflow.route.workflows.new",
+      "status": "passed"
+    }
+  ],
+  "action_count": 415,
+  "sequence_digest": "45cdde744830cd610b0d0d1693cf0eacfb7af5fcc35bdf9507a155446b48f68a",
+  "evidence": {
+    "ui": 197,
+    "http": 204,
+    "database": 224,
+    "reconciled": 415
+  },
+  "artifacts": [],
+  "cleanup": {
+    "passed": true,
+    "residual_entity_ids": []
+  },
+  "unverified_capabilities": [],
+  "risk_classification": "soak",
+  "status": "passed",
+  "run_topology": {
+    "run_id": "20260905t123408z-416671c40978adda",
+    "host": "127.0.0.1",
+    "ports": {
+      "backend": 45713,
+      "fixture": 45715,
+      "frontend": 44935,
+      "oauth": 42387
+    },
+    "database_name": "stratum_e2e_20260905t123408z_416671c40978adda"
+  },
+  "owned_cleanup": {
+    "database_dropped": true,
+    "lease_removed": true
+  },
+  "expires_at": "2026-09-08T12:44:40.73578978Z"
+}

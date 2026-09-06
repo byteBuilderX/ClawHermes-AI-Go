@@ -198,7 +198,7 @@ start_services() {
 start_child() { local variable=$1 command=$2 log=$3 pid; setsid bash -c "$command" >"$log" 2>&1 & pid=$!; printf -v "$variable" '%s' "$pid"; }
 start_child oauth_pid "${STATEFUL_E2E_OAUTH_COMMAND:-cd '$repo_dir' && go run ./cmd/e2e-github-oauth}" "$work_dir/oauth.log"
 start_child mcp_pid "${STATEFUL_E2E_MCP_COMMAND:-cd '$repo_dir' && go run ./cmd/e2e-mcp-server}" "$work_dir/mcp.log"
-start_child backend_pid "${STATEFUL_E2E_BACKEND_COMMAND:-cd '$repo_dir' && FRONTEND_URL='$E2E_WEB_URL' OPIK_URL='$E2E_FIXTURE_URL/opik' PORT='$backend_port' SECURE_COOKIES=false MCP_ALLOW_PRIVATE_TARGETS=true go run ./cmd/server}" "$work_dir/backend.log"
+start_child backend_pid "${STATEFUL_E2E_BACKEND_COMMAND:-cd '$repo_dir' && FRONTEND_URL='$E2E_WEB_URL' OPIK_URL='$E2E_FIXTURE_URL/opik' PORT='$backend_port' SECURE_COOKIES=false MCP_ALLOW_PRIVATE_TARGETS=true TRACE_PAYLOAD_ENDPOINT='127.0.0.1:9000' TRACE_PAYLOAD_ACCESS_KEY='minioadmin' TRACE_PAYLOAD_SECRET_KEY='minioadmin' TRACE_PAYLOAD_BUCKET='stratum-trace-evidence' TRACE_PAYLOAD_USE_TLS=false go run ./cmd/server}" "$work_dir/backend.log"
 start_child frontend_pid "${STATEFUL_E2E_FRONTEND_COMMAND:-cd '$repo_dir/web' && CI=1 VITE_API_BASE_URL='$E2E_API_URL' npm run dev -- --host 127.0.0.1 --port '$frontend_port' --strictPort}" "$work_dir/frontend.log"
 poll() { local label=$1 command=$2; for _ in $(seq 1 "${STATEFUL_E2E_HEALTH_ATTEMPTS:-120}"); do bash -c "$command" >/dev/null 2>&1 && return 0; sleep 1; done; printf '%s failed health check\n' "$label" >&2; return 1; }
 poll oauth "${STATEFUL_E2E_OAUTH_HEALTH_COMMAND:-curl -fsS -D - -H 'X-Stratum-E2E-Instance: $run_id' 'http://127.0.0.1:$oauth_port/health' | grep -Fi 'X-Stratum-E2E-Instance: $run_id'}" || return 1

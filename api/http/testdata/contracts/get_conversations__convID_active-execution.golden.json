@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default-unauth",
+    "method": "GET",
+    "path": "/conversations/:convID/active-execution",
+    "body": {
+      "error": "missing bearer token"
+    },
+    "want_status": 401
+  }
+]

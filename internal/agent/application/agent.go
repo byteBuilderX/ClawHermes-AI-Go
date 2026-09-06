@@ -741,7 +741,7 @@ func (a *BaseAgent) Execute(ctx context.Context, input string, options ...Execut
 	snap.metrics.RecordAgentExecutionDuration(snap.agentID, string(snap.agentType), result.Duration.Seconds())
 	snap.metrics.RecordAgentStepCount(snap.agentID, string(snap.agentType), result.Steps)
 
-	recordFingerprintAndKPI(snap.metrics, execSpan, requestSpan, snap.agentID, string(snap.agentType), snap.llmModel, snap.systemPrompt+globalSystemSuffix(snap.globalSystemSuffix), cfg, snap.maxContextTokens, result, status)
+	recordFingerprintAndKPI(snap.metrics, execSpan, requestSpan, snap.agentID, string(snap.agentType), snap.llmModel, snap.systemPrompt+globalSystemSuffix(snap.globalSystemSuffix), cfg, snap.maxContextTokens, result, status, cfg.TenantID)
 
 	return result, execErr
 }
@@ -770,19 +770,27 @@ func startAgentExecuteSpan(
 	)
 }
 
+// recordAgentKPI 打点 agent 任务级 KPI（agent_task_completed / task_duration /
+// cost_per_task / conversation_turns）。task_kind 槽当前镜像 agent_type：平台尚无
+// 独立 task-kind 维度（IncAgentTaskCompleted 唯一生产调用方就是这里），预留真实
+// task-kind（如审批类任务）接入时再分离。
+func recordAgentKPI(metrics observability.MetricsProvider, agentID, agentType, status, tenantID string, result *AgentResult) {
+	metrics.IncAgentTaskCompleted(agentID, agentType, agentType, status, tenantID)
+	metrics.RecordAgentTaskLatency(agentID, agentType, result.Duration.Seconds())
+	metrics.RecordAgentCostPerTask(agentID, agentType, result.CostUSD)
+	metrics.RecordAgentConversationTurn(agentID, result.Steps)
+}
+
 func recordFingerprintAndKPI(
 	metrics observability.MetricsProvider,
 	execSpan, requestSpan oteltrace.Span,
-	agentID, taskKind, llmModel, systemPrompt string,
+	agentID, agentType, llmModel, systemPrompt string,
 	cfg *ExecutionConfig,
 	maxContextTokens int,
 	result *AgentResult,
-	status string,
+	status, tenantID string,
 ) {
-	metrics.IncAgentTaskCompleted(agentID, taskKind, taskKind, status)
-	metrics.RecordAgentTaskLatency(agentID, taskKind, result.Duration.Seconds())
-	metrics.RecordAgentCostPerTask(agentID, taskKind, result.CostUSD)
-	metrics.RecordAgentConversationTurn(agentID, result.Steps)
+	recordAgentKPI(metrics, agentID, agentType, status, tenantID, result)
 	// 指纹记录实际解析模型与路由链：fallback 降级后 ModelResolved 为实际
 	// 成功模型，ModelRoutedVia 为尝试过的模型链；未降级时保持配置模型。
 	resolved := llmModel
@@ -1754,7 +1762,7 @@ func (a *BaseAgent) persistChatMessages(ctx context.Context, tracer oteltrace.Tr
 		ConversationID: cfg.ConversationID, Role: "assistant", Content: result.Output,
 		UserID: cfg.UserID, AgentID: agentID, MemoryScope: memoryScope,
 		SkipOutbox: false, Visibility: domain.ChatMessageVisibilityUser, Artifacts: result.Artifacts,
-		TraceID: cfg.TraceID,
+		Sources: result.Sources, TraceID: cfg.TraceID,
 	}
 	_, saveAgentSpan := tracer.Start(ctx, "agent.chat_store.save_assistant")
 	saveCtx2, saveCancel2 := context.WithTimeout(ctx, constants.AgentDBQueryTimeout)

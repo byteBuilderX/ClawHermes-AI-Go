@@ -18,6 +18,7 @@ import (
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
 	"github.com/byteBuilderX/stratum/internal/memory/domain"
 	"github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/persistence"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 	"github.com/byteBuilderX/stratum/pkg/tokenutil"
@@ -152,6 +153,23 @@ func (w *EnricherWorker) resolvePlatformInt(ctx context.Context, key string, def
 	return def
 }
 
+// logConfigError 记录一次记忆模型参数配置失败并计数（stage 标识消费组件）。
+// 各消费点在解析模型失败处复用；err 非 *modelconfig.Err 时为空操作（不吞普通
+// 错误、不伪造计数）。logger 可为 nil（测试未注入时安全）。
+func logConfigError(logger *zap.Logger, key, stage string, err error) {
+	ce, ok := modelconfig.AsConfigError(err)
+	if !ok {
+		return
+	}
+	modelconfig.IncError(ce.Key, stage, ce.State)
+	if logger != nil {
+		logger.Error("memory.modelconfig.config_error",
+			zap.String("param", ce.Key),
+			zap.String("config_state", string(ce.State)),
+			zap.Error(err))
+	}
+}
+
 // enrichSettings holds the per-call platform-resolved enrich LLM settings.
 type enrichSettings struct {
 	model       string
@@ -159,13 +177,18 @@ type enrichSettings struct {
 }
 
 // resolveEnrichSettings resolves the enrich model/temperature for one event.
-// 模型未配置（空）时交由 llmgateway 从模型目录解析默认，代码内不写死兜底
-// 模型；prompt 单独解析，空值回落内置模板。
-func (w *EnricherWorker) resolveEnrichSettings(ctx context.Context) enrichSettings {
-	return enrichSettings{
-		model:       w.resolvePlatformString(ctx, "memory.enrich_model", ""),
-		temperature: w.resolvePlatformFloat(ctx, "memory.enrich_temperature", constants.MemoryEnrichLLMTemperature),
+// 模型为必需平台参数（fail-closed）：未显式配置或解析失败返回 *modelconfig.Err，
+// 禁止空模型回落 llmgateway 默认；温度仍回落常量默认。
+func (w *EnricherWorker) resolveEnrichSettings(ctx context.Context) (enrichSettings, error) {
+	model, err := modelconfig.ResolveChatModel(ctx, w.paramResolver, modelconfig.KeyEnrichModel)
+	if err != nil {
+		logConfigError(w.logger, modelconfig.KeyEnrichModel, "enrich", err)
+		return enrichSettings{}, err
 	}
+	return enrichSettings{
+		model:       model,
+		temperature: w.resolvePlatformFloat(ctx, "memory.enrich_temperature", constants.MemoryEnrichLLMTemperature),
+	}, nil
 }
 
 // summarySettings holds the per-call platform-resolved session-summary LLM
@@ -177,14 +200,19 @@ type summarySettings struct {
 }
 
 // resolveSummarySettings resolves the summary model/temperature/threshold for
-// one event. 模型未配置（空）时交由 llmgateway 从模型目录解析默认，代码内
-// 不写死兜底模型；prompt 单独解析，空值回落内置模板。
-func (w *EnricherWorker) resolveSummarySettings(ctx context.Context) summarySettings {
+// one event. 模型为必需平台参数（fail-closed）：未显式配置或解析失败返回
+// *modelconfig.Err，禁止空模型回落 llmgateway 默认；温度/阈值回落常量默认。
+func (w *EnricherWorker) resolveSummarySettings(ctx context.Context) (summarySettings, error) {
+	model, err := modelconfig.ResolveChatModel(ctx, w.paramResolver, modelconfig.KeySummaryModel)
+	if err != nil {
+		logConfigError(w.logger, modelconfig.KeySummaryModel, "enrich_summary", err)
+		return summarySettings{}, err
+	}
 	return summarySettings{
-		model:       w.resolvePlatformString(ctx, "memory.summary_model", ""),
+		model:       model,
 		temperature: w.resolvePlatformFloat(ctx, "memory.summary_temperature", constants.TaskSummarizeTemperature),
 		threshold:   w.resolvePlatformInt(ctx, "memory.summary_token_threshold", constants.EnricherSummaryTokenThreshold),
-	}
+	}, nil
 }
 
 // llmFor returns the LLMClient for tenantID. Prefers the resolver-supplied
@@ -292,15 +320,7 @@ func (w *EnricherWorker) processMessage(ctx context.Context, msg jetstream.Msg) 
 	}
 	enrichment, err := w.callEnrichLLM(ctx, llm, ev.Role, ev.Content)
 	if err != nil {
-		w.logger.Error("memory.enrich.llm",
-			zap.String("trace_id", traceID),
-			zap.String("message_id", ev.MessageID),
-			zap.Error(err))
-		enrichTotal.With(prometheus.Labels{"tenant_id": ev.TenantID, "status": "error"}).Inc()
-		retryOrDeadLetterWithOrphan(ctx, w.js, msg, w.maxDeliver, stopHeartbeat, deadLetterDetails{
-			Stage: "enrich", TenantID: ev.TenantID, MessageID: ev.MessageID, ErrorCode: "llm_failed",
-			TraceID: traceID,
-		}, w.vectorCleaner, w.logger, ev.TenantID, ev.MessageID, "memory.enrich.retry_or_dlq")
+		w.disposeEnrichError(ctx, msg, stopHeartbeat, ev, traceID, err)
 		return
 	}
 
@@ -386,7 +406,11 @@ func (w *EnricherWorker) runSummaryAsyncSafe(ctx context.Context, ev *MemoryEnri
 }
 
 func (w *EnricherWorker) callEnrichLLM(ctx context.Context, llm LLMClient, role, content string) (*EnrichmentResult, error) {
-	settings := w.resolveEnrichSettings(ctx)
+	settings, err := w.resolveEnrichSettings(ctx)
+	if err != nil {
+		// 模型为必需平台参数：缺失/解析失败已 logConfigError 计数，禁止空回落。
+		return nil, err
+	}
 	promptTmpl := w.resolvePlatformString(ctx, "memory.enrich_prompt", "")
 	if strings.TrimSpace(promptTmpl) == "" {
 		// fail-closed：无显式配置不允许空 system prompt 静默调用 LLM。
@@ -408,6 +432,37 @@ func (w *EnricherWorker) callEnrichLLM(ctx context.Context, llm LLMClient, role,
 	// token_estimate 由代码计算，不依赖 LLM 自填（不可靠）
 	result.TokenEstimate = tokenutil.EstimateText(content)
 	return &result, nil
+}
+
+// disposeEnrichError 分派富化失败路径：模型配置错（永久性，重试不会自愈）即时
+// DLQ 不消耗重试预算；其余 LLM/IO 错仍走 maxDeliver 重试→DLQ。独立方法使
+// processMessage 保持在线数与行数基线内。
+func (w *EnricherWorker) disposeEnrichError(
+	ctx context.Context,
+	msg jetstream.Msg,
+	stopHeartbeat func(),
+	ev *MemoryEnrichedEvent,
+	traceID string,
+	err error,
+) {
+	enrichTotal.With(prometheus.Labels{"tenant_id": ev.TenantID, "status": "error"}).Inc()
+	details := deadLetterDetails{
+		Stage: "enrich", TenantID: ev.TenantID, MessageID: ev.MessageID, TraceID: traceID,
+	}
+	if _, isCfg := modelconfig.AsConfigError(err); isCfg {
+		// 永久配置错 → 即时 DLQ（仿 embedder 无模型先例），配置修复后经重放恢复。
+		details.ErrorCode = "model_not_configured"
+		deadLetterWithOrphan(ctx, w.js, msg, stopHeartbeat, details, w.vectorCleaner,
+			w.logger, ev.TenantID, ev.MessageID, "memory.enrich.dlq")
+		return
+	}
+	w.logger.Error("memory.enrich.llm",
+		zap.String("trace_id", traceID),
+		zap.String("message_id", ev.MessageID),
+		zap.Error(err))
+	details.ErrorCode = "llm_failed"
+	retryOrDeadLetterWithOrphan(ctx, w.js, msg, w.maxDeliver, stopHeartbeat, details, w.vectorCleaner,
+		w.logger, ev.TenantID, ev.MessageID, "memory.enrich.retry_or_dlq")
 }
 
 // parseEnrichmentResult 解析富化 JSON 输出。解析失败由 CompleteStructured
@@ -512,7 +567,12 @@ func (w *EnricherWorker) maybeTriggerSummary(ctx context.Context, ev *MemoryEnri
 		return nil
 	}
 
-	settings := w.resolveSummarySettings(ctx)
+	settings, err := w.resolveSummarySettings(ctx)
+	if err != nil {
+		// 摘要模型为必需平台参数；缺失/解析失败已 logConfigError 计数 + ERROR。
+		// 副链不可重投：本轮跳过 summary，不触发任何 DB 读或 LLM 调用。
+		return nil
+	}
 	w.logger.Debug("memory.summary_resolved",
 		zap.String("model", settings.model),
 		zap.Float32("temperature", settings.temperature),

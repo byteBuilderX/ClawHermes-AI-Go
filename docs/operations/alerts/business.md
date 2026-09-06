@@ -190,6 +190,48 @@ workspace 无法在创建后补填（模型不可变），需在模型管理启�
 `rate(memory_worker_messages_total{status="error"}[30m])`。按 worker/tenant 定位；
 修复后错误率回落且消息吞吐正常。
 
+<a id="memory-model-param-missing"></a>
+
+## StratumMemoryModelParamMissing
+
+影响：必需 memory 模型平台参数（`memory.extraction_model` /
+`memory.reflection_model` / `memory.enrich_model` / `memory.summary_model` /
+`memory.embedding_model` / `memory.supersede_model` /
+`memory.history_summary_model`）缺失（空值/未配置）；紧急度：warning。缺失时该
+记忆步**运行期 fail-closed**（消息进重试/即时 DLQ，worker 本轮跳过）。查询
+`memory_model_config_health{state="missing"}` 定位未配置参数。
+
+处置：到平台参数把该 key 显式配置为**模型目录中 enabled** 的模型（记忆模型禁止
+留空回落网关默认），或关闭对应消费组件（关闭 Memory pipeline →
+extraction/reflection/enrich/summary/embedding 不再必需；memory 消费关闭 →
+supersede/history 不再必需）。修复后探针 ~5 分钟内自动恢复；DLQ 消息经 ReplayService
+重放。
+
+<a id="memory-model-config-failed"></a>
+
+## StratumMemoryModelConfigFailed
+
+影响：记忆消费点因模型配置问题在运行期 fail-closed（15 分钟内
+`increase(memory_model_config_errors_total[15m]) > 0`，label
+`param`/`stage`/`state` 归因）；紧急度：warning。区别于周期探针，本告警只在对应
+记忆步真实执行且模型缺失/解析失败时递增（无流量不触发）。
+
+处置：按 `param` 定位到平台参数，按 `state` 区分 missing（未配置）与 unavailable
+（读时解析失败，多为显式模型不在目录或 DB 故障）。补齐配置或关闭对应消费组件后
+计数停止增长；先看 `StratumMemoryModelParamMissing` / `StratumMemoryModelParamDisabled`
+的探针状态确认根因。
+
+<a id="memory-model-param-disabled"></a>
+
+## StratumMemoryModelParamDisabled
+
+影响：必需 memory 模型参数配置了模型，但该模型不在模型目录 enabled 名单（被显式
+关闭/不存在）；紧急度：warning。与缺失同等处理：运行期 fail-closed。查询
+`memory_model_config_health{state="disabled"}` 定位参数与其当前值。
+
+处置：在模型目录重新启用该模型，或把参数改配为 enabled 模型；不要移除参数值留空
+（会转为 StratumMemoryModelParamMissing）。修复后探针自动恢复。
+
 <a id="evaluation-job-errors"></a>
 
 ## StratumEvaluationJobErrors

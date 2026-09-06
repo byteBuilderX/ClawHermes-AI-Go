@@ -60,6 +60,53 @@ func TestTriggersForObservation(t *testing.T) {
 		}
 	})
 
+	t.Run("behavior abandonment with flag verdict triggers behavior_anomaly", func(t *testing.T) {
+		o := obs()
+		o.Verdict = VerdictFlag
+		o.Signals.Behavior.Abandonment = true
+		if got := TriggersForObservation(o, cfg); len(got) != 1 || got[0] != TriggerBehaviorAnomaly {
+			t.Fatalf("got %v, want [behavior_anomaly]", got)
+		}
+	})
+
+	t.Run("behavior escalation with flag verdict triggers behavior_anomaly", func(t *testing.T) {
+		o := obs()
+		o.Verdict = VerdictFlag
+		o.Signals.Behavior.Escalation = true
+		if got := TriggersForObservation(o, cfg); len(got) != 1 || got[0] != TriggerBehaviorAnomaly {
+			t.Fatalf("got %v, want [behavior_anomaly]", got)
+		}
+	})
+
+	t.Run("behavior signals without flag verdict do not trigger", func(t *testing.T) {
+		o := obs()
+		o.Verdict = VerdictBlock
+		o.Signals.Behavior.Abandonment = true
+		if got := TriggersForObservation(o, cfg); containsReason(got, TriggerBehaviorAnomaly) {
+			t.Fatalf("got %v, want no behavior_anomaly (block 无 judge 仍不进池)", got)
+		}
+	})
+
+	t.Run("retry signal alone does not trigger behavior_anomaly", func(t *testing.T) {
+		o := obs()
+		o.Verdict = VerdictFlag
+		o.Signals.Behavior.Retry = true
+		if got := TriggersForObservation(o, cfg); containsReason(got, TriggerBehaviorAnomaly) {
+			t.Fatalf("got %v, want no behavior_anomaly", got)
+		}
+	})
+
+	t.Run("behavior_anomaly accumulates with judge triggers when both present", func(t *testing.T) {
+		o := obs()
+		o.Verdict = VerdictFlag
+		o.Signals.Behavior.Abandonment = true
+		o.Signals.Judge = []JudgeSignal{{Dimension: "faithfulness", Score: 1.0, Confidence: 0.4}}
+		got := TriggersForObservation(o, cfg)
+		if !containsReason(got, TriggerBehaviorAnomaly) || !containsReason(got, TriggerLowConfidence) {
+			t.Fatalf("got %v, want [behavior_anomaly low_confidence]", got)
+		}
+	})
+
 	t.Run("low confidence triggers", func(t *testing.T) {
 		o := obs()
 		o.Signals.Judge = []JudgeSignal{{Dimension: "faithfulness", Score: 1.0, Confidence: 0.4}}
@@ -235,6 +282,8 @@ func TestReviewTriggerReasonRiskLevel(t *testing.T) {
 		{TriggerLowConfidence, ReviewRiskMedium},
 		{TriggerDimensionSplit, ReviewRiskMedium},
 		{TriggerNeedsReview, ReviewRiskMedium},
+		{TriggerBehaviorAnomaly, ReviewRiskMedium},
+		{TriggerTrajectoryFailed, ReviewRiskMedium},
 		{ReviewTriggerReason("unknown_future"), ReviewRiskLow},
 	}
 	for _, tc := range cases {

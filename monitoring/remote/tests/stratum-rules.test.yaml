@@ -1283,6 +1283,38 @@ tests:
               dashboard_url: https://stratum.grafana/d/evaluation
               runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-rule-blocked
 
+  - name: evaluation rule disabled alert fires after its for duration
+    interval: 1m
+    input_series:
+      - series: 'eval_rule_hit_total{rule="tool_denylist", resource="agent", verdict="detected"}'
+        values: '0+30x25'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: StratumEvalRuleDisabled
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: StratumEvalRuleDisabled
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: StratumEvalRuleDisabled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: evaluation
+              environment: remote-test
+              component: runtime-observation
+              rule: tool_denylist
+              resource: agent
+              verdict: detected
+            exp_annotations:
+              summary: 规则护栏命中但未拦截
+              description: >-
+                检测到规则护栏命中但未拦截：evaluation.ruleguard.enabled=false 但 denylist 非空，
+                命中 verdict=detected 持续 5 分钟。护栏当前只检测不拦截，命中工具照常执行。若该
+                工具应禁用，请开启 evaluation.ruleguard.enabled；否则收紧 denylist 移除误报。
+              dashboard_url: https://stratum.grafana/d/evaluation
+              runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-rule-disabled
+
   - name: evaluation review backlog alert fires after its for duration
     interval: 1m
     input_series:
@@ -1436,4 +1468,101 @@ tests:
     alert_rule_test:
       - eval_time: 20m
         alertname: StratumEvalQueueBacklogHigh
+        exp_alerts: []
+
+  - name: memory model param missing fires after its for duration
+    interval: 1m
+    input_series:
+      - series: 'memory_model_config_health{param="memory.supersede_model",state="missing"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: StratumMemoryModelParamMissing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: StratumMemoryModelParamMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: stratum
+              environment: remote-test
+              component: memory
+              param: memory.supersede_model
+              state: missing
+            exp_annotations:
+              summary: 必需 memory 模型参数未配置
+              description: Memory 必需模型参数 memory.supersede_model 为空/未配置，运行期将 fail-closed。
+              dashboard_url: /d/stratum-service-overview
+              runbook_url: /docs/operations/alerts/business.md#memory-model-param-missing
+
+  - name: memory model param missing does not fire when configured ok
+    interval: 1m
+    input_series:
+      - series: 'memory_model_config_health{param="memory.supersede_model",state="ok"}'
+        values: '1x12'
+      - series: 'memory_model_config_health{param="memory.supersede_model",state="missing"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: StratumMemoryModelParamMissing
+        exp_alerts: []
+
+  - name: memory model param disabled fires after its for duration
+    interval: 1m
+    input_series:
+      - series: 'memory_model_config_health{param="memory.enrich_model",state="disabled"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: StratumMemoryModelParamDisabled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: stratum
+              environment: remote-test
+              component: memory
+              param: memory.enrich_model
+              state: disabled
+            exp_annotations:
+              summary: 必需 memory 模型参数指向未启用模型
+              description: Memory 必需模型参数 memory.enrich_model 配置的模型不在 enabled 目录，运行期将 fail-closed。
+              dashboard_url: /d/stratum-service-overview
+              runbook_url: /docs/operations/alerts/business.md#memory-model-param-disabled
+
+  - name: memory model config errors fire after sustained increase
+    interval: 1m
+    input_series:
+      - series: 'memory_model_config_errors_total{param="memory.enrich_model",stage="enrich",state="missing"}'
+        values: '0+1x14'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: StratumMemoryModelConfigFailed
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: StratumMemoryModelConfigFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: stratum
+              environment: remote-test
+              component: memory
+              param: memory.enrich_model
+              stage: enrich
+              state: missing
+            exp_annotations:
+              summary: 记忆步骤因模型配置缺失 fail-closed
+              # 输入序列确定性（0+1x14），15m increase 外推稳定为 11，与仓库既有
+              # "$value 外推值硬编码" 约定一致（如 "increase 6"、"current value 10700"）。
+              description: Memory enrich 因 memory.enrich_model missing 失败 11 次。
+              dashboard_url: /d/stratum-service-overview
+              runbook_url: /docs/operations/alerts/business.md#memory-model-config-failed
+
+  - name: memory model config errors do not fire without failures
+    interval: 1m
+    input_series:
+      - series: 'memory_model_config_errors_total{param="memory.enrich_model",stage="enrich",state="missing"}'
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: StratumMemoryModelConfigFailed
         exp_alerts: []

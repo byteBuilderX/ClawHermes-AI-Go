@@ -37,12 +37,16 @@ type ListVersionsQuery struct {
 }
 
 type VersionSummary struct {
-	ID           string    `json:"id"`
-	DefinitionID string    `json:"definition_id"`
-	Number       int64     `json:"version"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string `json:"id"`
+	DefinitionID string `json:"definition_id"`
+	Number       int64  `json:"version"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	// CreatedBy 是发布该版本的原始 actor id（版本历史「操作者」）；CreatedByName
+	// 为展示名（display_name > github_login > 无 users 命中留空，前端回退 CreatedBy）。
+	CreatedBy     string    `json:"created_by"`
+	CreatedByName string    `json:"created_by_name"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type VersionPage struct {
@@ -123,14 +127,40 @@ func (s *DefinitionService) ListVersions(
 	if err != nil {
 		return VersionPage{}, fmt.Errorf("list workflow versions: %w", err)
 	}
+	names, err := s.resolveVersionActorNames(ctx, rows)
+	if err != nil {
+		return VersionPage{}, err
+	}
 	summaries := make([]VersionSummary, len(rows))
 	for i, row := range rows {
 		summaries[i] = VersionSummary{
 			ID: row.ID, DefinitionID: row.DefinitionID, Number: row.Number, Name: row.Name,
 			Description: row.Description, CreatedAt: row.CreatedAt,
+			CreatedBy: row.CreatedBy, CreatedByName: names[row.CreatedBy],
 		}
 	}
 	return VersionPage{Versions: summaries, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+// resolveVersionActorNames 批量解析版本发布者展示名（display-only）。未注入
+// nameResolver 时跳过（操作者列回退原始 id，names 恒空映射）；注入后查询失败
+// 必须传播错误（fail-closed：禁止默认名掩盖查询故障）。无 users 命中的 actor
+// （system 占位符等）不在映射中 → CreatedByName 留空，前端回退 CreatedBy 原文。
+func (s *DefinitionService) resolveVersionActorNames(ctx context.Context, rows []domain.Version) (map[string]string, error) {
+	if s.nameResolver == nil {
+		return map[string]string{}, nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.CreatedBy != "" {
+			ids = append(ids, row.CreatedBy)
+		}
+	}
+	names, err := s.nameResolver.ResolveActorNames(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("workflow service resolve actor names: %w", err)
+	}
+	return names, nil
 }
 
 func (s *RunService) ListRuns(ctx context.Context, tenantID string, query ListRunsQuery) (RunPage, error) {

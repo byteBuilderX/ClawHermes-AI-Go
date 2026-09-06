@@ -667,9 +667,9 @@ GET /auth/me
 
 1. DNS A 记录指向公网 IP（`101.200.181.141`）。
 2. `ingress.hosts[0].host` 从空字符串改成正式域名。
-3. 把 TLS 换成公共可信证书：用 Let's Encrypt 之类的外部 CA（例如 `k8s/ingress.yaml` 里出现的
-   `cert-manager.io/cluster-issuer: letsencrypt-prod` 注解），或为域名申请商业证书，替换
-   `stratum-ingress-tls` 的内部 CA 证书。
+3. 把 TLS 换成公共可信证书：用 Let's Encrypt 之类的外部 CA（例如 `helm/values-prod.yaml` 的
+   `ingress.annotations["cert-manager.io/cluster-issuer"]: letsencrypt-prod`），或为域名申请商业证书，
+   替换 `stratum-ingress-tls` 的内部 CA 证书。
 4. `frontendUrl` / `githubCallbackUrl` 改成 `https://<正式域名>`（同时更新 `PUBLIC_BASE_URL`）。
 5. GitHub OAuth App 的 callback URL 同步改成 HTTPS 域名地址。
 6. 移除 deploy.yml 里 `--set-string config.secureCookies="false"` 覆盖，让 `secureCookies` 保持

@@ -16,9 +16,40 @@ import {
   safeSummarySchema,
   candidateCommandResponseSchema,
   experimentCommandResponseSchema,
+  behaviorStatsSchema,
+  costStatsSchema,
+  monitorResourceSummarySchema,
+  monitorResourcesPageSchema,
+  monitorTrendSchema,
+  suiteRevisionMetaSchema,
+  suiteSummarySchema,
 } from './evaluation';
 
 describe('evaluation model', () => {
+  it('parses and preserves a session script case without stripping turns', () => {
+    const parsed = evaluationCaseSchema.parse({
+      id: 'c-session', name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: {
+        goal: '处理退货退款诉求',
+        turns: [
+          { user: '快递没到', probe: '识别到退货意向' },
+          { user: '请退款', tool_spec: { must_call: ['refund'], max_calls: 2 } },
+        ],
+      },
+    });
+    expect(parsed.session).toBeDefined();
+    expect(parsed.session?.turns).toHaveLength(2);
+    expect(parsed.session?.turns[1].tool_spec?.must_call).toEqual(['refund']);
+    expect(parsed.session?.turns[1].tool_spec?.max_calls).toBe(2);
+  });
+
+  it('leaves session undefined for single-turn cases', () => {
+    const parsed = evaluationCaseSchema.parse({
+      name: '单轮', input: '你好', expected_output: '您好', assertion_mode: 'contains', enabled: true,
+    });
+    expect(parsed.session).toBeUndefined();
+  });
+
   it('parses completed job with result id', () => {
     const job = evaluationJobSchema.parse({ job_id: 'job-1', status: 'succeeded', result_id: 'run-1' });
     expect(job.result_id).toBe('run-1');
@@ -238,5 +269,102 @@ describe('observedTraceEvidenceSchema', () => {
   it('parses a valid trace evidence object', () => {
     const ev = observedTraceEvidenceSchema.parse({ cost_usd: 0.05, latency_ms: 200, success: false, tool_call_count: 3, tool_error_count: 1 });
     expect(ev.tool_call_count).toBe(3);
+  });
+});
+
+describe('evaluation monitor schemas', () => {
+  // §4.2 端点 1 样例：quality 仅列实际出现维度；cost 延迟可 null；process 可为对象或 null。
+  const summaryRow = {
+    resource_kind: 'skill', resource_id: 'skill-a', sample_count: 128,
+    quality: [{ dimension: 'faithfulness', pass_rate: 0.92, avg_score: 0.92, avg_confidence: 0.87, samples: 128 }],
+    behavior: { rule_hits: 15, retry_count: 3, escalation_count: 1, abandonment_count: 0,
+      verdict: { pass: 120, flag: 6, block: 2 } },
+    cost: { total_tokens: 154000, total_cost_usd: 0.42, avg_latency_ms: 1800, p95_latency_ms: 5200 },
+    process: { process_pass_rate: 0.67, run_id: 'run-9', run_created_at: '2026-09-02T08:00:00Z' },
+  };
+
+  it('parses the endpoint 1 resource-row summary with inner behavior and nullable process', () => {
+    const page = monitorResourcesPageSchema.parse({ items: [summaryRow], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } });
+    expect(page.items[0].quality[0].pass_rate).toBe(0.92);
+    expect(page.items[0].behavior.verdict.block).toBe(2);
+    expect(page.items[0].cost.p95_latency_ms).toBe(5200);
+    expect(page.items[0].process?.run_id).toBe('run-9');
+    expect(page.window.from).toBe('2026-08-27T00:00:00Z');
+  });
+
+  it('keeps process null when the window has no succeeded run', () => {
+    const row = monitorResourceSummarySchema.parse({ ...summaryRow, process: null });
+    expect(row.process).toBeNull();
+  });
+
+  it('keeps latency null when no latency sample exists', () => {
+    const cost = costStatsSchema.parse({ total_tokens: 0, total_cost_usd: 0, avg_latency_ms: null, p95_latency_ms: null });
+    expect(cost.avg_latency_ms).toBeNull();
+  });
+
+  it('accepts empty quality and empty series/runs as honest empty states', () => {
+    expect(monitorResourceSummarySchema.parse({ ...summaryRow, quality: [], process: null }).quality).toEqual([]);
+    const trend = monitorTrendSchema.parse({ resource_kind: 'skill', resource_id: 'skill-a', series: [], runs: [] });
+    expect(trend.series).toEqual([]);
+    expect(trend.runs).toEqual([]);
+  });
+
+  it('rejects unknown top-level and nested keys (strict wire contract)', () => {
+    expect(() => monitorResourcesPageSchema.parse({ items: [summaryRow], window: { from: 'a', to: 'b' }, next_cursor: 'x' })).toThrow();
+    expect(() => behaviorStatsSchema.parse({ rule_hits: 1, retry_count: 0, escalation_count: 0,
+      abandonment_count: 0, verdict: { pass: 1, flag: 0, block: 0 }, extra: true })).toThrow();
+    expect(() => monitorResourceSummarySchema.parse({ ...summaryRow, resource_kind: 'plugin' })).toThrow();
+  });
+
+  it('parses a full-limit row set without a pagination field (truncation is client-inferred)', () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({ ...summaryRow, resource_id: `skill-${index}` }));
+    const page = monitorResourcesPageSchema.parse({ items, window: { from: 'a', to: 'b' } });
+    expect(page.items).toHaveLength(20);
+    expect(page.items[0].resource_id).toBe('skill-0');
+  });
+});
+
+describe('suite management schemas', () => {
+  it('parses the enhanced suite list row with active/draft version meta', () => {
+    const parsed = suiteSummarySchema.parse({
+      id: 'suite-1', name: '投诉基线', description: '', resource_kind: 'skill', status: 'active',
+      active_revision_id: 'rev-v3', draft_revision_id: 'rev-draft',
+      active_version_no: 3, draft_version_no: 0, active_case_count: 7, draft_case_count: 2,
+      created_by: 'user-1', created_at: '2026-09-01T00:00:00Z',
+    });
+    expect(parsed.active_version_no).toBe(3);
+    expect(parsed.active_case_count).toBe(7);
+    expect(parsed.resource_kind).toBe('skill');
+  });
+
+  it('parses a legacy suite list row that omits the S1-2 additive keys', () => {
+    const parsed = suiteSummarySchema.parse({
+      id: 'suite-legacy', name: '旧基线', description: '历史遗留', status: 'published',
+      created_by: 'user-1', created_at: '2026-08-01T00:00:00Z',
+    });
+    expect(parsed.active_version_no).toBeUndefined();
+    expect(parsed.resource_kind).toBeUndefined();
+  });
+
+  it('rejects an unknown key on the strict suite list row', () => {
+    expect(() => suiteSummarySchema.parse({
+      id: 's', name: 'n', description: '', status: 'published', created_at: '2026-08-01T00:00:00Z', extra: true,
+    })).toThrow();
+  });
+
+  it('parses the lightweight version chain rows with nullable published_at', () => {
+    const published = suiteRevisionMetaSchema.parse({
+      id: 'rev-v2', version_no: 2, status: 'published', resource_kind: 'skill',
+      created_by: 'user-1', published_at: '2026-08-20T00:00:00Z', enabled_case_count: 7,
+    });
+    expect(published.version_no).toBe(2);
+    expect(published.published_at).toBe('2026-08-20T00:00:00Z');
+    const draft = suiteRevisionMetaSchema.parse({
+      id: 'rev-draft', status: 'draft', resource_kind: 'skill',
+      created_by: 'user-1', enabled_case_count: 2,
+    });
+    expect(draft.version_no).toBeUndefined();
+    expect(draft.published_at).toBeUndefined();
+    expect(draft.status).toBe('draft');
   });
 });

@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS eval_cases (
     input             JSONB NOT NULL DEFAULT '{}',
     expected_output   JSONB NOT NULL DEFAULT '{}',
     assertion_mode    TEXT NOT NULL DEFAULT 'contains',
+    session           JSONB NOT NULL DEFAULT '{}',
     evaluator_config  JSONB NOT NULL DEFAULT '{}',
     tags              TEXT[] NOT NULL DEFAULT '{}',
     critical          BOOL NOT NULL DEFAULT false,
@@ -484,6 +485,8 @@ CREATE TABLE IF NOT EXISTS eval_cases (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_eval_cases_revision ON eval_cases(suite_revision_id);
+-- 阶段 B 会话容器地基：eval_cases 升级会话剧本（'{}' = 旧单轮 case，Session 解码 nil）。
+ALTER TABLE eval_cases ADD COLUMN IF NOT EXISTS session JSONB NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS eval_runs (
     id                TEXT PRIMARY KEY,
@@ -531,6 +534,7 @@ CREATE TABLE IF NOT EXISTS eval_case_results (
     process_pass     BOOL NOT NULL DEFAULT true,
     process_failure  TEXT NOT NULL DEFAULT '',
     tool_sequence    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    turns            JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_eval_case_results_run ON eval_case_results(run_id);
@@ -543,6 +547,8 @@ ALTER TABLE eval_case_results ADD COLUMN IF NOT EXISTS trace_evidence JSONB NOT 
 ALTER TABLE eval_case_results ADD COLUMN IF NOT EXISTS process_pass BOOL NOT NULL DEFAULT true;
 ALTER TABLE eval_case_results ADD COLUMN IF NOT EXISTS process_failure TEXT NOT NULL DEFAULT '';
 ALTER TABLE eval_case_results ADD COLUMN IF NOT EXISTS tool_sequence JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- 阶段 B 会话容器地基：逐轮执行证据投影（'[]' = 旧单轮结果，GetRun 读回 nil）。
+ALTER TABLE eval_case_results ADD COLUMN IF NOT EXISTS turns JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- 运行态观测明细（规格 §4.3 EvalObservation）。param_version/signals/cost_perf
 -- 为 JSONB 结构化字段，由 Go json.Marshal 后写入。
@@ -562,6 +568,29 @@ CREATE INDEX IF NOT EXISTS idx_eval_observations_resource_time
     ON eval_observations (resource_kind, resource_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_observations_trace
     ON eval_observations (trace_id);
+CREATE INDEX IF NOT EXISTS idx_eval_observations_verdict_time
+    ON eval_observations (verdict, created_at DESC);
+
+-- 分层门禁台账（spec §4.1.2）：每次 gate 评估决策落一行；target/evidence 为 JSONB
+-- 结构化字段，由 Go json.Marshal 写入。人工审批走 agent_tool_approvals，不新增审批表，
+-- approval_id 关联。action 记录决策对应的动作形态（如 rollback_recommended / escalate）。
+CREATE TABLE IF NOT EXISTS eval_gate_actions (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK (scope IN ('platform','resource')),
+    target JSONB NOT NULL,
+    layer TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT '',
+    evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    actor TEXT NOT NULL DEFAULT '',
+    approval_id TEXT NOT NULL DEFAULT '',
+    host_tenant_id TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_eval_gate_actions_target_time
+    ON eval_gate_actions (scope, target, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_gate_actions_decision
+    ON eval_gate_actions (decision, created_at DESC);
 
 -- 人工评审池（P1c §6.6）：观测/评测集判定低置信与判异信号入池，人工 4 分类回写。
 -- snapshot JSONB 保留入池时完整上下文（观测信号 / case 快照），评审详情免回查。
@@ -574,7 +603,7 @@ CREATE TABLE IF NOT EXISTS eval_review_items (
     resource_kind  TEXT NOT NULL,
     resource_id    TEXT NOT NULL,
     trigger_reason TEXT NOT NULL CHECK (trigger_reason IN
-        ('low_confidence','dimension_split','judge_rule_conflict','needs_review','process_output_conflict')),
+        ('low_confidence','dimension_split','judge_rule_conflict','needs_review','process_output_conflict','behavior_anomaly','trajectory_failed')),
     snapshot       JSONB NOT NULL DEFAULT '{}'::jsonb,
     status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','reviewed')),
     human_verdict  TEXT NOT NULL DEFAULT '' CHECK (human_verdict IN
@@ -587,13 +616,15 @@ CREATE TABLE IF NOT EXISTS eval_review_items (
 );
 -- 升级存量租户：评测删除门禁的创建者列（评审项系统入池恒 ''，仅租户 owner 可删）。
 ALTER TABLE eval_review_items ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
--- 升级存量租户：§6.5 process_output_conflict 加入 trigger_reason 枚举后，历史租户
--- 的旧 check 约束仍拒绝该值（过程断言失败入池即 500）。CREATE TABLE IF NOT EXISTS
--- 不会重建已有表，故以 DROP IF EXISTS + ADD CONSTRAINT 幂等替换——每次 provision
--- 先删后加，新旧租户最终都含 process_output_conflict。
+-- 升级存量租户：trigger_reason 枚举随门禁演进扩展——§6.5 加 process_output_conflict，
+-- 分层门禁 P1（spec §4.1.2）判异信号加 behavior_anomaly（行为异常/judge 跌阈需人工
+-- 复核时入池），阶段 B §4.5 会话轨迹判负加 trajectory_failed（整段停滞/漂移强制
+-- 人工复核）。历史租户旧 check 约束仍拒绝新值（过程断言失败入池即 500），而
+-- CREATE TABLE IF NOT EXISTS 不会重建已有表，故以 DROP IF EXISTS + ADD CONSTRAINT
+-- 幂等替换——每次 provision 先删后加，新旧租户最终都含全部演进枚举。
 ALTER TABLE eval_review_items DROP CONSTRAINT IF EXISTS eval_review_items_trigger_reason_check;
 ALTER TABLE eval_review_items ADD CONSTRAINT eval_review_items_trigger_reason_check
-    CHECK (trigger_reason IN ('low_confidence','dimension_split','judge_rule_conflict','needs_review','process_output_conflict'));
+    CHECK (trigger_reason IN ('low_confidence','dimension_split','judge_rule_conflict','needs_review','process_output_conflict','behavior_anomaly','trajectory_failed'));
 CREATE INDEX IF NOT EXISTS idx_eval_review_items_status
     ON eval_review_items(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_review_items_source
@@ -925,6 +956,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS artifacts_json JSONB NOT NULL DEFAULT '[]';
+-- sources_json 持久化 assistant 回答的 RAG 溯源来源（camelCase JSON，与 live
+-- SSE sources 帧同构），供刷新/重进会话时回放；旧行默认 []（无来源，不迁移）。
+ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS sources_json JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'user';
 ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_visibility_check;
@@ -1142,6 +1177,9 @@ CREATE TABLE IF NOT EXISTS workflow_versions (
     version_no      BIGINT      NOT NULL,
     name            TEXT        NOT NULL,
     description     TEXT        NOT NULL DEFAULT '',
+    -- 发布者/operator（版本历史「操作者」原始 id，展示名由 application join
+    -- public.users 现算）。新版本由 publish 写路径直接记 actor，存量行走下方幂等回填。
+    created_by      TEXT        NOT NULL DEFAULT '',
     spec_json       JSONB       NOT NULL,
     input_schema_json JSONB     NOT NULL DEFAULT '{"task_label":"任务","fields":[]}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1151,11 +1189,29 @@ ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS definition_id UUID;
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS version_no BIGINT NOT NULL DEFAULT 1;
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS spec_json JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS input_schema_json JSONB NOT NULL DEFAULT '{"task_label":"任务","fields":[]}';
 ALTER TABLE workflow_versions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_workflow_versions_definition
     ON workflow_versions (definition_id, version_no DESC);
+-- 存量版本 created_by 尽力回填（ProvisionAllTenantSchemas 每次启动幂等重放，
+-- WHERE created_by='' 保证只回填一次、重复执行稳定）：优先关联到该版本发布时
+-- operation=publish 的最近审计行（resource_change_audits 无版本外键，靠
+-- resource_id=definition_id + created_at<=版本创建时间近似）；关联不到回落
+-- definition 创建者；仍为空则保持 ''。新版本写路径已直接记 actor，不受影响。
+UPDATE workflow_versions v
+   SET created_by = COALESCE(
+       (SELECT a.actor_id FROM resource_change_audits a
+         WHERE a.resource_kind = 'workflow'
+           AND a.resource_id = v.definition_id::text
+           AND a.operation = 'publish'
+           AND a.created_at <= v.created_at
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT 1),
+       (SELECT d.created_by FROM workflow_definitions d WHERE d.id = v.definition_id),
+       '')
+ WHERE v.created_by = '';
 
 CREATE TABLE IF NOT EXISTS workflow_runs (
     id               UUID        PRIMARY KEY DEFAULT public.gen_uuid_v7(),

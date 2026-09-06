@@ -21,6 +21,8 @@ import (
 // exercised here, not just on the DB-backed repo).
 type memStore struct {
 	groups map[string]*memGroup
+	// lastEvalActor 记录最近一次 UpdateEvalState 收到的 actor，供 service 默认路径断言。
+	lastEvalActor string
 }
 
 type memGroup struct {
@@ -157,6 +159,30 @@ func (m *memStore) ListVersions(_ context.Context, groupKey string) ([]port.Plat
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].VersionSeq > out[j].VersionSeq })
 	return out, nil
+}
+
+func (m *memStore) GetVersion(_ context.Context, groupKey string, versionSeq int64) (port.PlatformVersion, error) {
+	g := m.group(groupKey)
+	for _, v := range g.versions {
+		if int64(v.VersionSeq) == versionSeq {
+			return *v, nil
+		}
+	}
+	return port.PlatformVersion{}, domain.ErrVersionNotFound
+}
+
+// UpdateEvalState 写平台版本真实 EvalState 字段（与 DB 独立列语义一致）；actor 单独
+// 记录到 lastEvalActor，供 service 空 actor 默认 "api" 路径断言。
+func (m *memStore) UpdateEvalState(_ context.Context, groupKey string, versionSeq int64, state, actor string) error {
+	m.lastEvalActor = actor
+	g := m.group(groupKey)
+	for _, v := range g.versions {
+		if int64(v.VersionSeq) == versionSeq {
+			v.EvalState = state
+			return nil
+		}
+	}
+	return domain.ErrVersionNotFound
 }
 
 func newTestStore() *memStore {
@@ -565,6 +591,12 @@ func (e *errStore) Rollback(context.Context, string, int64, string) error { retu
 func (e *errStore) ListVersions(context.Context, string) ([]port.PlatformVersion, error) {
 	return nil, e.err
 }
+func (e *errStore) GetVersion(context.Context, string, int64) (port.PlatformVersion, error) {
+	return port.PlatformVersion{}, e.err
+}
+func (e *errStore) UpdateEvalState(context.Context, string, int64, string, string) error {
+	return e.err
+}
 
 // TestResolverSnapshotFailClosed 断言平台快照读取失败 fail-closed：DB 错误上抛，
 // 不回退默认；resource-scope 解析不触平台存储。
@@ -692,6 +724,76 @@ func TestServiceCreateDraftSanitizesSensitiveValues(t *testing.T) {
 		want := `"sha256:` + strings.Repeat("ab", 32) + `"`
 		if got := string(draft.Snapshot["agent.sensitive_secret"]); got != want {
 			t.Fatalf("re-saved value = %s, want passthrough %s", got, want)
+		}
+	})
+}
+
+// TestServiceGateVersionOps 覆盖平台版本门禁读写的 service 薄转发（spec §4.2.3）：
+// GetVersion 按 group+version_seq 命中返回版本元数据；UpdateEvalState 命中写
+// eval_state、未知 seq → ErrVersionNotFound（errors.Is）；store 错误上抛（fail-closed）。
+func TestServiceGateVersionOps(t *testing.T) {
+	registry := domain.NewParametersRegistry()
+	store := newTestStore()
+	store.seedPublished(domain.GroupEvaluation, map[string]json.RawMessage{"evaluation.optimizer.temperature": json.RawMessage(`0.5`)})
+	svc := NewService(registry, store)
+
+	versions, err := svc.Versions(context.Background(), domain.GroupEvaluation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("seed versions = %d, want 1", len(versions))
+	}
+	seq := int64(versions[0].VersionSeq)
+
+	t.Run("GetVersion hit returns version seq", func(t *testing.T) {
+		got, err := svc.GetVersion(context.Background(), domain.GroupEvaluation, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int64(got.VersionSeq) != seq || got.GroupKey != domain.GroupEvaluation {
+			t.Fatalf("GetVersion = %+v, want group=%s seq=%d", got, domain.GroupEvaluation, seq)
+		}
+	})
+
+	t.Run("UpdateEvalState hit records state", func(t *testing.T) {
+		if err := svc.UpdateEvalState(context.Background(), domain.GroupEvaluation, seq, "rollback_recommended", "gate"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.GetVersion(context.Background(), domain.GroupEvaluation, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.EvalState != "rollback_recommended" {
+			t.Fatalf("eval_state = %q, want %q", got.EvalState, "rollback_recommended")
+		}
+	})
+
+	t.Run("actor defaults to api when empty", func(t *testing.T) {
+		if err := svc.UpdateEvalState(context.Background(), domain.GroupEvaluation, seq, "rollback_recommended", ""); err != nil {
+			t.Fatalf("empty actor must default to api, got error: %v", err)
+		}
+		if store.lastEvalActor != "api" {
+			t.Fatalf("empty actor default = %q, want \"api\"", store.lastEvalActor)
+		}
+	})
+
+	t.Run("unknown seq maps to ErrVersionNotFound", func(t *testing.T) {
+		if _, err := svc.GetVersion(context.Background(), domain.GroupEvaluation, 999); !errors.Is(err, domain.ErrVersionNotFound) {
+			t.Fatalf("GetVersion unknown = %v, want ErrVersionNotFound", err)
+		}
+		if err := svc.UpdateEvalState(context.Background(), domain.GroupEvaluation, 999, "rollback_recommended", "gate"); !errors.Is(err, domain.ErrVersionNotFound) {
+			t.Fatalf("UpdateEvalState unknown = %v, want ErrVersionNotFound", err)
+		}
+	})
+
+	t.Run("store failure propagates (fail-closed)", func(t *testing.T) {
+		esvc := NewService(registry, &errStore{err: errors.New("db down")})
+		if _, err := esvc.GetVersion(context.Background(), domain.GroupEvaluation, 1); err == nil {
+			t.Fatal("GetVersion store error must propagate")
+		}
+		if err := esvc.UpdateEvalState(context.Background(), domain.GroupEvaluation, 1, "rollback_recommended", "gate"); err == nil {
+			t.Fatal("UpdateEvalState store error must propagate")
 		}
 	})
 }

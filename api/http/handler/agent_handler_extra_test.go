@@ -166,6 +166,7 @@ func agentRoutes(h *AgentHandler, auth ...gin.HandlerFunc) *gin.Engine {
 	g.PUT("/:id", h.UpdateAgent)
 	g.DELETE("/:id", h.DeleteAgent)
 	g.GET("/:id/versions", h.ListAgentVersions)
+	g.GET("/:id/versions/:versionID", h.GetAgentVersion)
 	g.POST("/:id/rollback", h.RollbackAgent)
 	g.GET("/:id/executions", h.ListExecutions)
 	g.GET("/:id/executions/:traceID/tool-traces", h.ListExecutionToolTraces)
@@ -600,7 +601,7 @@ func (f *fakeHandlerActorNames) ResolveActorNames(_ context.Context, ids []strin
 func TestAgentHandlerListAgentVersions(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	vrepo := &mockHandlerVersionRepo{versions: []versioningdomain.Version{
-		{ID: "v2", RevisionNo: 2, Status: versioningdomain.VersionStatusPublished, Source: versioningdomain.VersionSourceManual,
+		{ID: "v2", RevisionNo: 2, ParentVersionID: "v1", Status: versioningdomain.VersionStatusPublished, Source: versioningdomain.VersionSourceManual,
 			ContentHash: "h2", CreatedBy: "u1", CreatedAt: now, IsCurrent: true},
 		{ID: "v1", RevisionNo: 1, Status: versioningdomain.VersionStatusDeprecated, Source: versioningdomain.VersionSourceRollback,
 			ContentHash: "h1", CreatedBy: "u2", CreatedAt: now.Add(-time.Hour)},
@@ -620,6 +621,9 @@ func TestAgentHandlerListAgentVersions(t *testing.T) {
 	require.Contains(t, body, `"createdByName":"Alice"`)
 	require.Contains(t, body, `"createdByName":"Bob"`)
 	require.Contains(t, body, `"source":"rollback"`)
+	// parentVersionId：v2 自链到 v1；首版 v1 为空串。
+	require.Contains(t, body, `"parentVersionId":"v1"`)
+	require.Contains(t, body, `"parentVersionId":""`)
 
 	// 极端情况：缺 tenant → 401。
 	w = doAgentReq(t, agentRoutes(h), http.MethodGet, "/agents/a1/versions", "")
@@ -635,6 +639,59 @@ func TestAgentHandlerListAgentVersions(t *testing.T) {
 		deps.VersionRepo = &mockHandlerVersionRepo{listErr: errors.New("db down")}
 	})
 	w = doAgentReq(t, authedRoutes(h), http.MethodGet, "/agents/a1/versions", "")
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAgentHandlerGetAgentVersion(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	// 整份编辑面 payload（snake_case 键），由「详情」Drawer 与直父版本 diff。
+	v2 := versioningdomain.Version{
+		ID: "v2", RevisionNo: 2, ParentVersionID: "v1", Status: versioningdomain.VersionStatusPublished,
+		Source: versioningdomain.VersionSourceManual, ContentHash: "h2", CreatedBy: "u1", CreatedAt: now,
+		IsCurrent: true, SafeSummary: map[string]any{"name": "Alpha"}, Payload: map[string]any{
+			"name": "Alpha", "description": "desc", "system_prompt": "prompt", "llm_model": "qwen-plus",
+			"max_iterations": 5,
+		},
+	}
+	h := newTestAgentHandler(t, &mockAgentRepo{agents: []*domain.AgentConfig{{ID: "a1", Name: "Alpha"}}}, nil, func(deps *agent.AgentServiceDeps) {
+		deps.VersionRepo = &mockHandlerVersionRepo{getByID: map[string]versioningdomain.Version{"v2": v2}}
+		deps.ActorNameResolver = &fakeHandlerActorNames{names: map[string]string{"u1": "Alice"}}
+	})
+
+	// 成功 → 200：整份 payload + parentVersionId + 昵称 + safeSummary。
+	w := doAgentReq(t, authedRoutes(h), http.MethodGet, "/agents/a1/versions/v2", "")
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	require.Contains(t, body, `"id":"v2"`)
+	require.Contains(t, body, `"parentVersionId":"v1"`)
+	require.Contains(t, body, `"createdByName":"Alice"`)
+	require.Contains(t, body, `"safeSummary":{"name":"Alpha"}`)
+	require.Contains(t, body, `"payload":{`)
+	require.Contains(t, body, `"system_prompt":"prompt"`)
+	require.Contains(t, body, `"llm_model":"qwen-plus"`)
+	require.Contains(t, body, `"max_iterations":5`)
+
+	// 极端情况：缺 tenant → 401。
+	w = doAgentReq(t, agentRoutes(h), http.MethodGet, "/agents/a1/versions/v2", "")
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+
+	// 极端情况：版本不存在 → 404（ErrVersionNotFound → middleware）。
+	h = newTestAgentHandler(t, &mockAgentRepo{agents: []*domain.AgentConfig{{ID: "a1", Name: "Alpha"}}}, nil, func(deps *agent.AgentServiceDeps) {
+		deps.VersionRepo = &mockHandlerVersionRepo{getByID: map[string]versioningdomain.Version{}}
+	})
+	w = doAgentReq(t, authedRoutes(h), http.MethodGet, "/agents/a1/versions/nope", "")
+	require.Equal(t, http.StatusNotFound, w.Code)
+
+	// 极端情况：版本基座查询失败 → 500。
+	h = newTestAgentHandler(t, &mockAgentRepo{agents: []*domain.AgentConfig{{ID: "a1", Name: "Alpha"}}}, nil, func(deps *agent.AgentServiceDeps) {
+		deps.VersionRepo = &mockHandlerVersionRepo{getErr: errors.New("db down")}
+	})
+	w = doAgentReq(t, authedRoutes(h), http.MethodGet, "/agents/a1/versions/v2", "")
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+
+	// 极端情况：版本基座未装配（nil）→ fail-closed 500。
+	h = newTestAgentHandler(t, &mockAgentRepo{agents: []*domain.AgentConfig{{ID: "a1", Name: "Alpha"}}}, nil, nil)
+	w = doAgentReq(t, authedRoutes(h), http.MethodGet, "/agents/a1/versions/v2", "")
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 }
 

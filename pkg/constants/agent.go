@@ -260,6 +260,12 @@ const (
 	MinimalRetryReserveBytes = 64
 )
 
+// ChatConversationSourceEvaluation 标记评测驱动的受控会话
+// （chat_conversations.source 列，阶段 B §5.4）。评测会话与手动/工作流会话
+// 同表同协议（真历史、逐轮续跑），仅来源隔离；生产侧默认会话列表隐藏
+// （ListConversations 过滤），避免污染用户工作台。
+const ChatConversationSourceEvaluation = "evaluation"
+
 // DynamicRecentGroups returns the number of recent message groups to preserve
 // during in-loop compaction, scaled by the agent's MaxContextTokens.
 //

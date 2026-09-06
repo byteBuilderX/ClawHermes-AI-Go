@@ -8,20 +8,20 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/byteBuilderX/stratum/internal/agent/domain/port"
-	"github.com/byteBuilderX/stratum/pkg/observability"
 	"github.com/byteBuilderX/stratum/pkg/tokenutil"
 )
 
-// TokenLedger 聚合 agent 侧的 token 估算、记录、成本计算。
-// Record 用 trace.SpanFromContext 标注当前 span，不自行创建 span，因此不持有
-// tracer（此前未使用的 tracer 字段是死代码，接线时一并移除）。
+// TokenLedger 聚合 agent 侧的 token 估算与成本计算。
+// Record 只做 cost 计算 + span 属性 + 日志，不再打 Prometheus usage：C1 计数去重
+// （spec §1.3 C1 / §11 D2①），llm_token_usage_total/llm_token_count 由网关出站
+// 唯一记账（gateway invokeComplete/invokeStream）。span 属性是 agent 侧执行证据，
+// Opik re-pull 依赖，保留。
 type TokenLedger struct {
-	metrics observability.MetricsProvider
-	logger  *zap.Logger
+	logger *zap.Logger
 }
 
-func NewTokenLedger(metrics observability.MetricsProvider, logger *zap.Logger) *TokenLedger {
-	return &TokenLedger{metrics: metrics, logger: logger}
+func NewTokenLedger(logger *zap.Logger) *TokenLedger {
+	return &TokenLedger{logger: logger}
 }
 
 // UsageSummary 封装单次 LLM 调用的 token + 成本。
@@ -32,21 +32,10 @@ type UsageSummary struct {
 	CostUSD    float64
 }
 
-// Record 在每次 LLM 调用返回后调用，完成成本计算、Prometheus 打点、OTEL span、zap 日志。
+// Record 在每次 LLM 调用返回后调用，完成成本计算、OTEL span 标注、zap 日志。
 // 返回 (total tokens, cost USD)。
 func (l *TokenLedger) Record(ctx context.Context, model string, usage port.TokenUsage) (int, float64) {
 	cost := tokenutil.CostUSD(usage.Prompt, usage.Completion, model)
-
-	if l.metrics != nil {
-		if usage.Prompt > 0 {
-			l.metrics.IncLLMTokenUsage(model, "prompt", int64(usage.Prompt))
-			l.metrics.RecordLLMTokenHistogram(model, "prompt", float64(usage.Prompt))
-		}
-		if usage.Completion > 0 {
-			l.metrics.IncLLMTokenUsage(model, "completion", int64(usage.Completion))
-			l.metrics.RecordLLMTokenHistogram(model, "completion", float64(usage.Completion))
-		}
-	}
 
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {
 		span.SetAttributes(

@@ -90,6 +90,14 @@ func (f *stubGenSuiteRepo) GetActiveRevision(_ context.Context, _ string, _ stri
 	return f.draft, f.draftOK, nil
 }
 
+func (f *stubGenSuiteRepo) GetSuite(_ context.Context, _ string, _ string) (domain.EvalSuite, bool, error) {
+	return domain.EvalSuite{}, false, nil
+}
+
+func (f *stubGenSuiteRepo) ListSuiteRevisions(_ context.Context, _ string, _ string) ([]domain.SuiteRevisionMeta, error) {
+	return nil, nil
+}
+
 func (f *stubGenSuiteRepo) UpdateDraftCase(_ context.Context, _ string, _ string, _ domain.EvalCase) error {
 	return nil
 }

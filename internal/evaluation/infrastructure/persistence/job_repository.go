@@ -9,6 +9,7 @@ import (
 	auditdomain "github.com/byteBuilderX/stratum/internal/audit/domain"
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain"
 	"github.com/byteBuilderX/stratum/pkg/storage/postgres"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -127,6 +128,79 @@ func (r *PgJobRepository) Claim(
 		}
 		job.Status = domain.JobRunning
 		job.Attempts++
+		claimed = &job
+		return nil
+	})
+	return claimed, err
+}
+
+// EnqueuePlatformVerify 幂等插入平台验证任务（job_type=platform_verify，payload 按
+// pgx v5 JSONB 规则先 json.Marshal 再以 string 传）。ON CONFLICT (idempotency_key)
+// DO NOTHING：已存在（含终态）静默不覆盖；返回是否新插入（冲突 → false，调用方据此
+// 不重复 +queued）。
+func (r *PgJobRepository) EnqueuePlatformVerify(
+	ctx context.Context,
+	tenantID string,
+	p domain.PlatformVerifyPayload,
+	idempotencyKey, createdBy string,
+) (bool, error) {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return false, fmt.Errorf("evaluation job repository: marshal platform verify payload: %w", err)
+	}
+	inserted := false
+	err = r.execTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO evaluation_jobs (id, job_type, payload, status, idempotency_key, created_by, created_at)
+			 VALUES ($1,$2,$3,'queued',$4,$5,NOW())
+			 ON CONFLICT (idempotency_key) DO NOTHING`,
+			uuid.Must(uuid.NewV7()).String(), domain.JobTypePlatformVerify, string(payload), idempotencyKey, createdBy)
+		if err != nil {
+			return err
+		}
+		inserted = tag.RowsAffected() > 0
+		return nil
+	})
+	return inserted, err
+}
+
+// ClaimPlatformVerify 只取本租户一条 platform_verify 任务（queued 或 running 且 lease
+// 过期）并置 running 续租。任务完成判定/幂等由调用方处理（多租户验证无终态写入——
+// 回滚事件级任务由 idempotency_key 约束，P2 无 enqueue 调用方，见开放问题 #2）。
+func (r *PgJobRepository) ClaimPlatformVerify(
+	ctx context.Context,
+	tenantID, workerID string,
+	lease time.Duration,
+) (*domain.PlatformVerifyJob, error) {
+	var claimed *domain.PlatformVerifyJob
+	err := r.execTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var job domain.PlatformVerifyJob
+		var payloadJSON []byte
+		err := tx.QueryRow(ctx,
+			`SELECT id, payload
+			 FROM evaluation_jobs
+			 WHERE job_type=$1 AND (status='queued' OR (status='running' AND lease_until < NOW()))
+			 ORDER BY created_at
+			 FOR UPDATE SKIP LOCKED LIMIT 1`,
+			domain.JobTypePlatformVerify,
+		).Scan(&job.ID, &payloadJSON)
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE evaluation_jobs
+			 SET status='running', attempts=attempts+1, lease_owner=$2,
+			     lease_until=NOW()+make_interval(secs => $3), updated_at=NOW()
+			 WHERE id=$1`, job.ID, workerID, lease.Seconds()); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(payloadJSON, &job.Payload); err != nil {
+			return fmt.Errorf("evaluation job repository: unmarshal platform verify payload: %w", err)
+		}
+		job.TenantID = tenantID
 		claimed = &job
 		return nil
 	})

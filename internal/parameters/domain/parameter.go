@@ -77,6 +77,7 @@ type ParameterDefinition struct {
 	VisualHint  VisualHint `json:"visual_hint"`
 	Optimizable bool       `json:"optimizable"`
 	Sensitive   bool       `json:"sensitive"`
+	RiskTier    RiskTier   `json:"risk_tier,omitempty"` // O3 风险分级 high/medium/low（空 = 注册时按 DefaultRiskTierForKey 自动填充）
 	// ValidateFn overrides the built-in bounds check for complex-structure
 	// parameters (bindings / enabled_tools) whose validation lives in the
 	// evaluation adapters. Nil means built-in validation.

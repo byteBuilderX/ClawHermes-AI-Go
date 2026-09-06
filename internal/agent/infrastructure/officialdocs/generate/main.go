@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/byteBuilderX/stratum/pkg/reporoot"
 	"github.com/byteBuilderX/stratum/pkg/textchunk"
 	"gopkg.in/yaml.v3"
 )
@@ -58,9 +59,9 @@ func main() {
 		fatal(errors.New("both -manifest and -out are required"))
 	}
 
-	root, err := findRepositoryRoot()
-	if err != nil {
-		fatal(err)
+	root := reporoot.Find()
+	if root == "." {
+		fatal(errors.New("repository root with go.mod not found"))
 	}
 	absManifest, err := filepath.Abs(*manifestPath)
 	if err != nil {
@@ -275,25 +276,6 @@ func parentOrdinal(parentID string) (int, error) {
 		return 0, err
 	}
 	return ordinal, nil
-}
-
-func findRepositoryRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("get working directory: %w", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect repository root: %w", err)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", errors.New("repository root with go.mod not found")
-		}
-		dir = parent
-	}
 }
 
 func fatal(err error) {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   agentSchema,
+  agentVersionDetailSchema,
   agentVersionSchema,
   chatMessageSchema,
   conversationSchema,
@@ -9,6 +10,7 @@ import {
   type Agent,
   type AgentFormValues,
   type AgentVersion,
+  type AgentVersionDetail,
   type ChatMessage,
   type Conversation,
   type ExecuteAgentPayload,
@@ -44,6 +46,12 @@ export const agentApi = {
   listVersions: async (id: string): Promise<AgentVersion[]> => {
     const res = await api.get(`/agents/${id}/versions`);
     return z.array(agentVersionSchema).parse(res.data?.versions ?? []);
+  },
+  // 单版本内容：列表元数据 + 整份 payload（snake_case 快照键）。「详情」Drawer 取
+  // 点击版与其直父(parentVersionId)两次内容现算字段前后值；首版父为空。
+  getVersion: async (id: string, versionId: string): Promise<AgentVersionDetail> => {
+    const res = await api.get(`/agents/${id}/versions/${versionId}`);
+    return agentVersionDetailSchema.parse(res.data ?? {});
   },
   // rollback: 将生效指针指回历史已发布版本，立即生效、不产生新版本；返回重建后的 agent。
   rollback: async (id: string, versionId: string): Promise<Agent> => {

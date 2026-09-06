@@ -1,7 +1,9 @@
-import { Button, Form, Input, InputNumber, Modal, Select, Tabs } from 'antd';
-import { useState } from 'react';
+import { Button, Form, Input, InputNumber, Modal, Select, Tabs, Typography } from 'antd';
+import { useEffect, useState } from 'react';
 
 import type { ResourceKind } from '../model/evaluation';
+
+import { SuitePicker, type SuitePick } from './SuitePicker';
 
 const resourceOptions = [
   { value: 'skill', label: 'Skill' },
@@ -43,12 +45,27 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
   const [experimentForm] = Form.useForm<ExperimentCommandValues>();
   const [feedbackForm] = Form.useForm<FeedbackCommandValues>();
   const [loading, setLoading] = useState(false);
+  const [optimizationPick, setOptimizationPick] = useState<SuitePick | null>(null);
+  const [experimentPick, setExperimentPick] = useState<SuitePick | null>(null);
+  const optimizationKind = Form.useWatch('resource_kind', optimizationForm) as ResourceKind | undefined;
+  const experimentKind = Form.useWatch('resource_kind', experimentForm) as ResourceKind | undefined;
 
-  const submit = async <T,>(form: ReturnType<typeof Form.useForm<T>>[0], action: (values: T) => Promise<void>) => {
+  // 每次打开重置表单与套件选择，避免重开残留上一次命令的输入。
+  useEffect(() => {
+    if (!open) return;
+    optimizationForm.resetFields();
+    experimentForm.resetFields();
+    feedbackForm.resetFields();
+    setOptimizationPick(null);
+    setExperimentPick(null);
+  }, [open, optimizationForm, experimentForm, feedbackForm]);
+
+  const submit = async <T,>(form: ReturnType<typeof Form.useForm<T>>[0], action: (values: T) => Promise<void>,
+    enrich: (values: T) => T) => {
     const values = await form.validateFields();
     setLoading(true);
     try {
-      await action(values);
+      await action(enrich(values));
       form.resetFields();
       onClose();
     } catch {
@@ -67,6 +84,15 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
     </Form.Item>
   </>;
 
+  const suiteSection = (kind: ResourceKind | undefined, pick: SuitePick | null,
+    onChange: (pick: SuitePick | null) => void) => (
+    <Form.Item label="评测套件" required extra="演化命令必须运行在评测套件已发布的版本上。">
+      {kind
+        ? <SuitePicker resourceKind={kind} value={pick} onChange={onChange} />
+        : <Typography.Text type="secondary">请先选择资源类型，再选择已发布评测套件。</Typography.Text>}
+    </Form.Item>
+  );
+
   return <Modal title="进化操作" open={open} onCancel={onClose} footer={null} destroyOnHidden width={640}>
     <Tabs items={[
       { key: 'optimization', label: '生成优化候选', children: <Form form={optimizationForm} layout="vertical">
@@ -75,15 +101,13 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
           rules={[{ required: true, message: '请输入稳定 Revision ID' }]}>
           <Input aria-label="稳定 Revision ID" />
         </Form.Item>
-        <Form.Item name="suite_revision_id" label="Suite Revision ID"
-          rules={[{ required: true, message: '请输入 Suite Revision ID' }]}>
-          <Input aria-label="Suite Revision ID" />
-        </Form.Item>
+        {suiteSection(optimizationKind, optimizationPick, setOptimizationPick)}
         <Form.Item name="failure_summary" label="失败摘要" rules={[{ required: true, message: '请输入失败摘要' }]}>
           <Input.TextArea aria-label="失败摘要" rows={3} />
         </Form.Item>
-        <Button type="primary" loading={loading}
-          onClick={() => void submit(optimizationForm, onOptimize)}>生成候选</Button>
+        <Button type="primary" loading={loading} disabled={!optimizationPick?.revisionId}
+          onClick={() => void submit(optimizationForm, onOptimize,
+            (values) => ({ ...values, suite_revision_id: optimizationPick?.revisionId ?? '' }))}>生成候选</Button>
       </Form> },
       { key: 'experiment', label: '创建金丝雀', children: <Form form={experimentForm} layout="vertical">
         {resourceFields}
@@ -95,12 +119,10 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
           rules={[{ required: true, message: '请输入候选 Revision ID' }]}>
           <Input aria-label="候选 Revision ID" />
         </Form.Item>
-        <Form.Item name="suite_revision_id" label="Suite Revision ID"
-          rules={[{ required: true, message: '请输入 Suite Revision ID' }]}>
-          <Input aria-label="Suite Revision ID" />
-        </Form.Item>
-        <Button type="primary" loading={loading}
-          onClick={() => void submit(experimentForm, onExperiment)}>创建金丝雀</Button>
+        {suiteSection(experimentKind, experimentPick, setExperimentPick)}
+        <Button type="primary" loading={loading} disabled={!experimentPick?.revisionId}
+          onClick={() => void submit(experimentForm, onExperiment,
+            (values) => ({ ...values, suite_revision_id: experimentPick?.revisionId ?? '' }))}>创建金丝雀</Button>
       </Form> },
       { key: 'feedback', label: '记录反馈', children: <Form form={feedbackForm} layout="vertical">
         <Form.Item name="trace_id" label="Trace ID" rules={[{ required: true, message: '请输入 Trace ID' }]}>
@@ -113,7 +135,7 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
           <InputNumber aria-label="分数" min={0} max={1} step={0.1} style={{ width: '100%' }} />
         </Form.Item>
         <Button type="primary" loading={loading}
-          onClick={() => void submit(feedbackForm, onFeedback)}>提交反馈</Button>
+          onClick={() => void submit(feedbackForm, onFeedback, (values) => values)}>提交反馈</Button>
       </Form> },
     ]} />
   </Modal>;

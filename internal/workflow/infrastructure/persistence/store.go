@@ -186,7 +186,7 @@ func (s *PgStore) CreateVersion(ctx context.Context, tenantID string, v *domain.
 		return err
 	}
 	return s.exec(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions (id,definition_id,version_no,name,description,spec_json,input_schema_json) VALUES ($1,$2,$3,$4,$5,$6,$7)`, v.ID, v.DefinitionID, v.Number, v.Name, v.Description, string(spec), string(inputSchema)); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions (id,definition_id,version_no,name,description,created_by,spec_json,input_schema_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, v.ID, v.DefinitionID, v.Number, v.Name, v.Description, v.CreatedBy, string(spec), string(inputSchema)); err != nil {
 			return err
 		}
 		return insertChangeAudit(ctx, tx, ev)
@@ -197,7 +197,7 @@ func (s *PgStore) GetVersion(ctx context.Context, tenantID, id string) (*domain.
 	var v domain.Version
 	var raw, rawInputSchema []byte
 	err := s.exec(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT id,definition_id,version_no,name,description,spec_json,input_schema_json,created_at FROM workflow_versions WHERE id=$1`, id).Scan(&v.ID, &v.DefinitionID, &v.Number, &v.Name, &v.Description, &raw, &rawInputSchema, &v.CreatedAt)
+		return tx.QueryRow(ctx, `SELECT id,definition_id,version_no,name,description,created_by,spec_json,input_schema_json,created_at FROM workflow_versions WHERE id=$1`, id).Scan(&v.ID, &v.DefinitionID, &v.Number, &v.Name, &v.Description, &v.CreatedBy, &raw, &rawInputSchema, &v.CreatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -225,7 +225,7 @@ func (s *PgStore) ListVersions(
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workflow_versions WHERE definition_id=$1`, definitionID).Scan(&total); err != nil {
 			return err
 		}
-		result, err := tx.Query(ctx, `SELECT id,definition_id,version_no,name,description,created_at
+		result, err := tx.Query(ctx, `SELECT id,definition_id,version_no,name,description,created_by,created_at
 			FROM workflow_versions WHERE definition_id=$1 ORDER BY version_no DESC LIMIT $2 OFFSET $3`,
 			definitionID, query.Limit, query.Offset)
 		if err != nil {
@@ -236,7 +236,7 @@ func (s *PgStore) ListVersions(
 			var version domain.Version
 			if err := result.Scan(
 				&version.ID, &version.DefinitionID, &version.Number, &version.Name,
-				&version.Description, &version.CreatedAt,
+				&version.Description, &version.CreatedBy, &version.CreatedAt,
 			); err != nil {
 				return err
 			}
@@ -275,7 +275,7 @@ func (s *PgStore) CreateNextVersion(ctx context.Context, tenantID string, defini
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(version_no),0)+1 FROM workflow_versions WHERE definition_id=$1`, definition.ID).Scan(&number); err != nil {
 			return err
 		}
-		version, err := insertPublishedVersionTx(ctx, tx, definition, versionID, number)
+		version, err := insertPublishedVersionTx(ctx, tx, definition, versionID, number, versionActor(ev))
 		if err != nil {
 			return err
 		}
@@ -288,14 +288,24 @@ func (s *PgStore) CreateNextVersion(ctx context.Context, tenantID string, defini
 	return created, err
 }
 
+// versionActor 从发布审计事件取操作者 id（created_by 与审计同源）。ev 为空
+// （回滚/测试等不落版本写路径）时返回空串，created_by 保持列默认 ”。
+func versionActor(ev *auditdomain.ResourceChangeAuditEvent) string {
+	if ev == nil {
+		return ""
+	}
+	return ev.ActorID
+}
+
 // insertPublishedVersionTx publishes the next version row and sets the active
 // pointer inside the caller's write transaction：新发布即成为生效版本，事务内
 // 一并写入生效指针，避免发布成功但指针缺失。
-func insertPublishedVersionTx(ctx context.Context, tx pgx.Tx, definition *domain.Definition, versionID string, number int64) (*domain.Version, error) {
+func insertPublishedVersionTx(ctx context.Context, tx pgx.Tx, definition *domain.Definition, versionID string, number int64, actor string) (*domain.Version, error) {
 	version, err := definition.Publish(versionID, number)
 	if err != nil {
 		return nil, err
 	}
+	version.CreatedBy = actor
 	raw, err := json.Marshal(version.Spec)
 	if err != nil {
 		return nil, err
@@ -304,7 +314,7 @@ func insertPublishedVersionTx(ctx context.Context, tx pgx.Tx, definition *domain
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions (id,definition_id,version_no,name,description,spec_json,input_schema_json) VALUES ($1,$2,$3,$4,$5,$6,$7)`, version.ID, version.DefinitionID, version.Number, version.Name, version.Description, string(raw), string(inputSchema)); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions (id,definition_id,version_no,name,description,created_by,spec_json,input_schema_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, version.ID, version.DefinitionID, version.Number, version.Name, version.Description, version.CreatedBy, string(raw), string(inputSchema)); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE workflow_definitions SET active_version_id=$1,updated_at=NOW() WHERE id=$2`, version.ID, version.DefinitionID); err != nil {

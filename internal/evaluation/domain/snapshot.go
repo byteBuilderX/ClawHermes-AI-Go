@@ -10,6 +10,7 @@ const (
 	GroupEvaluation       = "evaluation" // 与 parameters 域 PlatformGroupEvaluation 值一致
 	GroupAgent            = "agent"
 	GroupTrace            = "trace"
+	GroupMemory           = "memory" // 与 parameters 域 GroupMemory 值一致（R30 用户 09-03：无条件并入评测快照 capture）
 )
 
 // GroupSnapshot 是评测 run 创建时点某个配置组的固化解：参数 key → 创建时点值。
@@ -40,7 +41,7 @@ type PinnedAssignments struct {
 type EvaluationContextSnapshot struct {
 	SchemaVersion     int
 	Evaluation        GroupSnapshot
-	Execution         []GroupSnapshot // agent + trace 组（被测启用 memory 时追加 memory 组）
+	Execution         []GroupSnapshot // agent + trace + memory 组（全部注册平台组；R30 用户 09-03：无条件并入，恒三组）
 	ResolvedExecution ResolvedExecution
 	PinnedAssignments PinnedAssignments
 	CapturedAt        time.Time

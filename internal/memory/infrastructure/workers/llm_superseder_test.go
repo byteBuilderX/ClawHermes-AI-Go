@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/workers"
 	"github.com/stretchr/testify/require"
 )
@@ -159,21 +160,39 @@ func TestResolvingLLMSupersederPropagatesContextCancellationBeforeClientCall(t *
 	require.Zero(t, clientCalls)
 }
 
-// TestLLMSupersederFailsClosedWithoutPrompt 验证未配置 supersede_prompt 即失败
-// （fail-closed，无内置模板兜底）。
-func TestLLMSupersederFailsClosedWithoutPrompt(t *testing.T) {
+// TestLLMSupersederFailsClosedWithoutModel 验证未装配参数服务（nil resolver，
+// supersede_model 空）即失败：*modelconfig.Err 且 State==missing，fail-closed，
+// 绝不回落 llmgateway 默认。
+func TestLLMSupersederFailsClosedWithoutModel(t *testing.T) {
 	client := completionClientFunc(func(_ context.Context, _ *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
 		return &llmdomain.CompletionResponse{Content: `{"supersedes":false,"reason":"ok"}`}, nil
 	})
 	judge := workers.NewLLMSuperseder(client)
 
 	_, err := judge.JudgeSupersede(context.Background(), "old", "new")
+	ce, ok := modelconfig.AsConfigError(err)
+	require.True(t, ok, "want *modelconfig.Err, got %v", err)
+	require.Equal(t, modelconfig.KeySupersedeModel, ce.Key)
+	require.Equal(t, modelconfig.StateMissing, ce.State)
+}
+
+// TestLLMSupersederFailsClosedWithoutPrompt 验证显式配置了 supersede_model 但未配置
+// supersede_prompt 即失败（fail-closed，无内置模板兜底）。
+func TestLLMSupersederFailsClosedWithoutPrompt(t *testing.T) {
+	client := completionClientFunc(func(_ context.Context, _ *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
+		return &llmdomain.CompletionResponse{Content: `{"supersedes":false,"reason":"ok"}`}, nil
+	})
+	judge := workers.NewLLMSuperseder(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
+		"memory.supersede_model": testModel,
+	}})
+
+	_, err := judge.JudgeSupersede(context.Background(), "old", "new")
 	require.ErrorContains(t, err, "memory.supersede_prompt not configured")
 }
 
-// TestLLMSupersederLeavesModelEmpty 验证判定请求 Model 为空（llmgateway client
-// 默认解析，pre-refactor 行为；金丝雀回归）。
-func TestLLMSupersederLeavesModelEmpty(t *testing.T) {
+// TestLLMSupersederUsesConfiguredModel 验证判定请求 Model = 平台参数显式配置的
+// supersede_model（空值回落已废除：模型缺失时 fail-closed，不会以空串放行）。
+func TestLLMSupersederUsesConfiguredModel(t *testing.T) {
 	var gotModel string
 	client := completionClientFunc(func(_ context.Context, req *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
 		gotModel = req.Model
@@ -184,8 +203,8 @@ func TestLLMSupersederLeavesModelEmpty(t *testing.T) {
 	if _, err := judge.JudgeSupersede(context.Background(), "old", "new"); err != nil {
 		t.Fatal(err)
 	}
-	if gotModel != "" {
-		t.Fatalf("expected empty model by default, got %q", gotModel)
+	if gotModel != testModel {
+		t.Fatalf("expected model %q propagated to request, got %q", testModel, gotModel)
 	}
 }
 

@@ -15,7 +15,7 @@
 
 | 现状 | 证据 |
 |---|---|
-| 记忆管道只吃 user/assistant 文本 | `internal/agent/application/agent_service.go` `bufferMemoryTurn` 仅缓冲 `user`/`assistant`，工具轨迹从未进入记忆管道 |
+| 记忆管道只吃 user/assistant 文本 | `internal/agent/application/agent_execution.go` `bufferMemoryTurn` 仅缓冲 `user`/`assistant`，工具轨迹从未进入记忆管道 |
 | 工具调用有记录，但都是运行/观测数据 | 图状态 `AllToolCalls` + tool 消息 → `agent_execution_checkpoints`（TTL 回收）→ Opik trace；不是记忆素材 |
 | 纯工具批次被主动丢弃 | `internal/memory/application/message_buffer.go` `discardLowValueBatch`：非 tool 内容 <50 runes 直接删除 |
 | NATS 富化路径明确排除工具消息 | `internal/agent/infrastructure/persistence/chat_store.go` `memoryOutboxContent`：role 必须为 user/assistant，"system/tool messages are internal signals" |

@@ -24,6 +24,17 @@ type WorkspaceVersionDTO struct {
 	PublishedAt   string // RFC3339；未发布为空串
 	IsCurrent     bool
 	SafeSummary   map[string]any
+	// ParentVersionID 指向直父版本（创建时自链的前一最高 revision 行）；空串=首版。
+	// 供前端「详情」Drawer 以父版本整份 payload 为 before 基线现算字段 diff。
+	ParentVersionID string
+}
+
+// WorkspaceVersionContentDTO 是单版本内容读接口的 wire shape：列表元数据 + 整份
+// 编辑面快照 payload（snake_case 键：name/description/config）。前端取点击版与其
+// 直父版两次内容，交给共享 Drawer 递归 diff 叶子字段。
+type WorkspaceVersionContentDTO struct {
+	WorkspaceVersionDTO
+	Payload map[string]any
 }
 
 // RollbackWorkspaceInput carries the actor performing the rollback and the
@@ -39,17 +50,18 @@ func workspaceVersionToDTO(v versioningdomain.Version) WorkspaceVersionDTO {
 		publishedAt = v.PublishedAt.UTC().Format(time.RFC3339)
 	}
 	return WorkspaceVersionDTO{
-		ID:            v.ID,
-		VersionNo:     v.RevisionNo,
-		Status:        string(v.Status),
-		Source:        string(v.Source),
-		ContentHash:   v.ContentHash,
-		CreatedBy:     v.CreatedBy,
-		CreatedByName: v.CreatedByName,
-		CreatedAt:     v.CreatedAt.UTC().Format(time.RFC3339),
-		PublishedAt:   publishedAt,
-		IsCurrent:     v.IsCurrent,
-		SafeSummary:   v.SafeSummary,
+		ID:              v.ID,
+		VersionNo:       v.RevisionNo,
+		Status:          string(v.Status),
+		Source:          string(v.Source),
+		ContentHash:     v.ContentHash,
+		CreatedBy:       v.CreatedBy,
+		CreatedByName:   v.CreatedByName,
+		CreatedAt:       v.CreatedAt.UTC().Format(time.RFC3339),
+		PublishedAt:     publishedAt,
+		IsCurrent:       v.IsCurrent,
+		SafeSummary:     v.SafeSummary,
+		ParentVersionID: v.ParentVersionID,
 	}
 }
 
@@ -102,6 +114,38 @@ func (s *WorkspaceService) resolveWorkspaceVersionNames(ctx context.Context, ten
 		}
 	}
 	return nil
+}
+
+// GetWorkspaceVersion returns one historical version's full content snapshot
+// (metadata + payload), which the frontend "detail" view diffs against the
+// direct parent. name 先经 GetByName 解析为 workspace id。未知版本返回
+// versioningdomain.ErrVersionNotFound（映射 404）；版本基座未装配时 fail closed。
+func (s *WorkspaceService) GetWorkspaceVersion(ctx context.Context, tenantID, name, versionID string) (WorkspaceVersionContentDTO, error) {
+	if s.versionRepo == nil {
+		return WorkspaceVersionContentDTO{}, fmt.Errorf("knowledge service get workspace version: version repo not wired")
+	}
+	ws, err := s.repo.GetByName(ctx, tenantID, name)
+	if err != nil {
+		return WorkspaceVersionContentDTO{}, err
+	}
+	v, found, err := s.versionRepo.GetVersion(ctx, tenantID, versioningdomain.ResourceKindKnowledge, ws.ID, versionID)
+	if err != nil {
+		return WorkspaceVersionContentDTO{}, err
+	}
+	if !found {
+		return WorkspaceVersionContentDTO{}, versioningdomain.ErrVersionNotFound
+	}
+	// 单版本经 DTO slice 解析展示名（resolveWorkspaceVersionNames 就地改元素），
+	// 再以解析后的 DTO + 原版 payload 组装内容。
+	dto := workspaceVersionToDTO(v)
+	one := []WorkspaceVersionDTO{dto}
+	if err := s.resolveWorkspaceVersionNames(ctx, tenantID, one); err != nil {
+		return WorkspaceVersionContentDTO{}, err
+	}
+	return WorkspaceVersionContentDTO{
+		WorkspaceVersionDTO: one[0],
+		Payload:             v.Payload,
+	}, nil
 }
 
 // RollbackWorkspace restores a deprecated historical version. The version

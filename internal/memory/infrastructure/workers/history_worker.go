@@ -49,7 +49,7 @@ func (w *HistoryWorker) Start(ctx context.Context) {
 	runWithRestart(ctx, w.stopCh, w.logger, "memory.history_worker", w.run)
 }
 func (w *HistoryWorker) run(ctx context.Context) {
-	w.RunOnce(ctx)
+	w.passGuarded(ctx)
 	ticker := time.NewTicker(constants.HistoryWorkerInterval)
 	defer ticker.Stop()
 	for {
@@ -59,9 +59,21 @@ func (w *HistoryWorker) run(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
-			w.RunOnce(ctx)
+			w.passGuarded(ctx)
 		}
 	}
+}
+
+// passGuarded 执行一轮带模型配置预检的 history pass：仅当 summarizer 在场且其
+// history_summary 模型未配置/解析失败时计 error 并跳过 RunOnce——绝不让下游把
+// 模型缺失当成功上报（原 ~97 行无条件 success）。summarizer 为 nil（仅维护/GC）
+// 时不构成失败，照常执行。从 run() 调用，定时与首拍两条路径都 fail-closed。
+func (w *HistoryWorker) passGuarded(ctx context.Context) {
+	start := time.Now()
+	if w.modelConfigUnavailable(ctx, start) {
+		return
+	}
+	w.RunOnce(ctx)
 }
 func (w *HistoryWorker) Stop() { w.stopOnce.Do(func() { close(w.stopCh) }) }
 
@@ -74,6 +86,7 @@ func (w *HistoryWorker) RunOnce(ctx context.Context) {
 	}()
 
 	start := time.Now()
+
 	for range historyAggregationMaxBatchesPerRun {
 		if !w.aggregateNext(ctx) {
 			break
@@ -96,6 +109,26 @@ func (w *HistoryWorker) RunOnce(ctx context.Context) {
 	}
 	incWorkerMessages("history", w.tenantID, "success")
 	observeWorkerDuration("history", w.tenantID, time.Since(start).Seconds())
+}
+
+// modelConfigUnavailable 预检 history_summary 模型配置：summarizer 在场且支持
+// CheckModelConfig 但模型未配置/解析失败时返回 true（已计 error + duration）。
+// summarizer 为 nil（仅维护/GC 模式）或非 LLM 实现时不构成失败。
+func (w *HistoryWorker) modelConfigUnavailable(ctx context.Context, start time.Time) bool {
+	if w.summarizer == nil {
+		return false
+	}
+	c, ok := w.summarizer.(interface{ CheckModelConfig(context.Context) error })
+	if !ok {
+		return false
+	}
+	if err := c.CheckModelConfig(ctx); err != nil {
+		logModelConfigError(w.logger, "history_summary", err)
+		incWorkerMessages("history", w.tenantID, "error")
+		observeWorkerDuration("history", w.tenantID, time.Since(start).Seconds())
+		return true
+	}
+	return false
 }
 
 func (w *HistoryWorker) aggregateNext(ctx context.Context) bool {

@@ -351,6 +351,7 @@ type llmMetricsSpy struct {
 	resolutionErrors []string // model|reason
 	durations        int
 	tokenUsage       []string // model|tokenType|count
+	tokenHistogram   []string // model|tokenType|count (histogram)
 	ttft             int
 }
 
@@ -366,7 +367,9 @@ func (s *llmMetricsSpy) RecordLLMRequestDuration(model, provider string, duratio
 func (s *llmMetricsSpy) IncLLMTokenUsage(model, tokenType string, count int64) {
 	s.tokenUsage = append(s.tokenUsage, fmt.Sprintf("%s|%s|%d", model, tokenType, count))
 }
-func (s *llmMetricsSpy) RecordLLMTokenHistogram(model, tokenType string, count float64) {}
+func (s *llmMetricsSpy) RecordLLMTokenHistogram(model, tokenType string, count float64) {
+	s.tokenHistogram = append(s.tokenHistogram, fmt.Sprintf("%s|%s|%.1f", model, tokenType, count))
+}
 func (s *llmMetricsSpy) RecordLLMFirstTokenLatency(model, provider string, latency float64) {
 	s.ttft++
 }
@@ -457,6 +460,7 @@ func TestGatewayComplete_recordsSuccessAndUsageMetrics(t *testing.T) {
 	require.Equal(t, []string{"qwen-turbo|Test Qwen|success"}, spy.requests)
 	require.Equal(t, 1, spy.durations)
 	require.Equal(t, []string{"qwen-turbo|prompt|1", "qwen-turbo|completion|1"}, spy.tokenUsage)
+	require.Equal(t, []string{"qwen-turbo|prompt|1.0", "qwen-turbo|completion|1.0"}, spy.tokenHistogram)
 }
 
 func TestGatewayComplete_skipsZeroTokenUsageMetrics(t *testing.T) {
@@ -467,6 +471,32 @@ func TestGatewayComplete_skipsZeroTokenUsageMetrics(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.Empty(t, spy.tokenUsage)
+	require.Empty(t, spy.tokenHistogram)
+	require.Equal(t, []string{"qwen-turbo|Test Qwen|success"}, spy.requests)
+}
+
+func TestGatewayCompleteStream_recordsSuccessUsageAndHistogram(t *testing.T) {
+	gateway, spy, _ := gatewayFixture(successChatProto{}, successEmbedProto{})
+	ctx := reqctx.WithTenantID(context.Background(), "test-tenant")
+
+	resp, err := gateway.CompleteStream(ctx, &infrastructure.CompletionRequest{Model: "qwen-turbo"}, func(string) {})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, []string{"qwen-turbo|Test Qwen|success"}, spy.requests)
+	require.Equal(t, 1, spy.durations)
+	require.Equal(t, []string{"qwen-turbo|prompt|1", "qwen-turbo|completion|1"}, spy.tokenUsage)
+	require.Equal(t, []string{"qwen-turbo|prompt|1.0", "qwen-turbo|completion|1.0"}, spy.tokenHistogram)
+}
+
+func TestGatewayCompleteStream_skipsZeroTokenUsageMetrics(t *testing.T) {
+	gateway, spy, _ := gatewayFixture(zeroUsageChatProto{}, successEmbedProto{})
+	ctx := reqctx.WithTenantID(context.Background(), "test-tenant")
+
+	resp, err := gateway.CompleteStream(ctx, &infrastructure.CompletionRequest{Model: "qwen-turbo"}, func(string) {})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Empty(t, spy.tokenUsage)
+	require.Empty(t, spy.tokenHistogram)
 	require.Equal(t, []string{"qwen-turbo|Test Qwen|success"}, spy.requests)
 }
 

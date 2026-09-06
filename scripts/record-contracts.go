@@ -6,13 +6,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,38 +20,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/byteBuilderX/stratum/api"
 	apihttp "github.com/byteBuilderX/stratum/api/http"
-	"github.com/byteBuilderX/stratum/api/wiring"
+	"github.com/byteBuilderX/stratum/api/http/contracttest"
 	"github.com/byteBuilderX/stratum/config"
-	agentapp "github.com/byteBuilderX/stratum/internal/agent/application"
-	agentdomain "github.com/byteBuilderX/stratum/internal/agent/domain"
-	agentport "github.com/byteBuilderX/stratum/internal/agent/domain/port"
-	auditdomain "github.com/byteBuilderX/stratum/internal/audit/domain"
-	auditport "github.com/byteBuilderX/stratum/internal/audit/domain/port"
-	evalapp "github.com/byteBuilderX/stratum/internal/evaluation/application"
-	"github.com/byteBuilderX/stratum/internal/evaluation/domain"
-	"github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
-	iamapp "github.com/byteBuilderX/stratum/internal/iam/application"
-	iamdomain "github.com/byteBuilderX/stratum/internal/iam/domain"
 	iamport "github.com/byteBuilderX/stratum/internal/iam/domain/port"
 	iamtoken "github.com/byteBuilderX/stratum/internal/iam/infrastructure/token"
-	llmapp "github.com/byteBuilderX/stratum/internal/llmgateway/application"
-	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
-	llmport "github.com/byteBuilderX/stratum/internal/llmgateway/domain/port"
 	llmgateway "github.com/byteBuilderX/stratum/internal/llmgateway/infrastructure"
-	platformapp "github.com/byteBuilderX/stratum/internal/platform/application"
-	platformdomain "github.com/byteBuilderX/stratum/internal/platform/domain"
-	schedapp "github.com/byteBuilderX/stratum/internal/scheduler/application"
-	scheddomain "github.com/byteBuilderX/stratum/internal/scheduler/domain"
-	schedport "github.com/byteBuilderX/stratum/internal/scheduler/domain/port"
-	versioningdomain "github.com/byteBuilderX/stratum/internal/versioning/domain"
-	workflowapp "github.com/byteBuilderX/stratum/internal/workflow/application"
-	workflowdomain "github.com/byteBuilderX/stratum/internal/workflow/domain"
-	workflowport "github.com/byteBuilderX/stratum/internal/workflow/domain/port"
 	"github.com/byteBuilderX/stratum/pkg/observability"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // Case represents a single recorded request/response snapshot.
@@ -68,149 +44,24 @@ type Case struct {
 	WantBodyRE string            `json:"want_body_regex,omitempty"`
 }
 
-var errStubNotFound = errors.New("stub: not found")
-
-func buildDDDContainer(cfg *config.Config, key *rsa.PrivateKey, logger *zap.Logger, metrics *observability.PrometheusMetrics) *wiring.Container {
-	idCounter := 0
-	nextID := func() string { idCounter++; return fmt.Sprintf("contract-%d", idCounter) }
-	return &wiring.Container{
-		Config: cfg, Logger: logger,
-		Platform: &wiring.Platform{
-			JWTService: iamtoken.NewJWTService(key), Metrics: metrics,
-			DashboardService: platformapp.NewDashboardService(contractDashboardRepo{}),
-		},
-		LLMGateway: &wiring.LLMGateway{
-			ProviderService:  llmapp.NewProviderService(contractProvRepo{}, contractModRepo{}, contractProvRuntime{}),
-			ModelMgmtService: llmapp.NewModelMgmtService(contractModRepo{}),
-		},
-		Skill: &wiring.Skill{}, MCP: &wiring.MCP{}, Memory: &wiring.Memory{},
-		Agent: func() *wiring.Agent {
-			gate := agentapp.NewOperationGateService(
-				contractOpPropRepo{}, contractOpUsageRepo{}, metrics,
-			)
-			svc := agentapp.NewAgentService(agentapp.AgentServiceDeps{
-				Registry: agentapp.NewRegistry(contractAgentRepo{}, logger),
-				Logger:   logger,
-				Metrics:  metrics,
-			})
-			svc.SetOperationGate(gate)
-			return &wiring.Agent{
-				ProposalService: agentapp.NewResourceChangeProposalService(
-					contractPropRepo{}, contractPropAuthorizer{}, nil, nil, metrics,
-				),
-				OperationGateService: gate,
-				OperationProposalSvc: agentapp.NewOperationProposalService(
-					contractOpPropRepo{}, contractTenantRole{}, metrics,
-				),
-				Service: svc,
-			}
-		}(),
-		Workflow: &wiring.Workflow{
-			DefinitionService: func() *workflowapp.DefinitionService {
-				svc := workflowapp.NewDefinitionService(contractDefRepo{}, contractVerRepo{}, nextID)
-				// 与 api/http/contract_test.go 的 buildDDDContainer 保持同一注入：
-				// 否则重新生成 golden 会固化 roles==nil 的 fail-closed 403。
-				svc.SetTenantRoleResolver(contractTenantRole{})
-				return svc
-			}(),
-			RunService:     workflowapp.NewRunService(contractVerRepo{}, contractRunStore{}, contractAgtExec{}, nextID),
-			ControlService: workflowapp.NewControlService(contractCtrlRepo{}, nextID),
-		},
-		Knowledge: &wiring.Knowledge{},
-		Evaluation: &wiring.Evaluation{
-			SuiteService: evalapp.NewSuiteService(nil), JobService: evalapp.NewJobService(nil, nil, nil),
-			QueryService:      evalapp.NewQueryService(contractQueryRepo{}),
-			ExperimentService: evalapp.NewExperimentService(contractExpRepo{}),
-			CandidateService:  evalapp.NewCandidateCommandService(contractCandRepo{}),
-			ReviewService: evalapp.NewReviewService(evalapp.ReviewServiceDeps{
-				Repo: contractReviewRepo{}, Logger: logger,
-			}),
-		},
-		IAM: &wiring.IAM{
-			AdminService: iamapp.NewAdminService(
-				contractAdminTR{},
-				iamapp.WithUserRepo(contractAdminUR{}),
-			),
-			TenantService:     iamapp.NewTenantService(contractTenantR{}, logger),
-			InvitationService: iamapp.NewInvitationService(contractInvR{}),
-		},
-		Scheduler: &wiring.Scheduler{Service: contractSchedulerStub(logger)},
-		Audit:     &wiring.Audit{QueryService: contractAuditRepo{}},
-	}
-}
-
-// contractSchedulerStub wires a real Service over stub ports so the DDD
-// router records deterministic scheduled-task responses.
-func contractSchedulerStub(logger *zap.Logger) *schedapp.Service {
-	return schedapp.NewService(contractSchedRepo{}, contractSchedRunner{}, contractSchedResolver{},
-		observability.NoopMetrics{}, logger, func() string { return "contract-task" }, time.Now)
-}
-
-// contractAuditRepo implements auditport.ResourceChangeAuditQuery so the DDD
-// router records deterministic resource-change audit responses.
-type contractAuditRepo struct{}
-
-func (contractAuditRepo) List(_ context.Context, _ string, _ auditport.ResourceChangeAuditFilter) ([]auditport.ResourceChangeAuditRow, int, error) {
-	return nil, 0, nil
-}
-
-func (contractAuditRepo) GetByID(_ context.Context, _, _ string) (*auditport.ResourceChangeAuditRow, error) {
-	return nil, nil
-}
-
-type contractSchedRepo struct{}
-
-func (contractSchedRepo) Insert(context.Context, string, *scheddomain.ScheduledTask) error {
-	return nil
-}
-func (contractSchedRepo) GetByID(context.Context, string, string) (*scheddomain.ScheduledTask, error) {
-	return nil, scheddomain.ErrScheduledTaskNotFound
-}
-func (contractSchedRepo) List(context.Context, string, int, int) ([]scheddomain.ScheduledTask, int, error) {
-	return nil, 0, nil
-}
-func (contractSchedRepo) Update(context.Context, string, *scheddomain.ScheduledTask) error {
-	return nil
-}
-func (contractSchedRepo) Delete(context.Context, string, string) error { return nil }
-func (contractSchedRepo) SetEnabled(context.Context, string, string, bool, *time.Time) error {
-	return nil
-}
-func (contractSchedRepo) ListDue(context.Context, string, time.Time, int) ([]scheddomain.ScheduledTask, error) {
-	return nil, nil
-}
-func (contractSchedRepo) RecordFire(context.Context, string, string, time.Time, string, string, time.Time, time.Time) (bool, error) {
-	return true, nil
-}
-
-type contractSchedRunner struct{}
-
-func (contractSchedRunner) StartAsync(context.Context, string, string, map[string]any, string, string) error {
-	return nil
-}
-
-type contractSchedResolver struct{}
-
-func (contractSchedResolver) GetVersion(context.Context, string, string) (*schedport.VersionInfo, error) {
-	return &schedport.VersionInfo{DefinitionID: "contract-workflow"}, nil
-}
-func (contractSchedResolver) ValidateInput(context.Context, string, string, map[string]any) error {
-	return nil
-}
-func (contractSchedResolver) ResolveVersionNames(context.Context, string, []string) (map[string]schedport.VersionName, error) {
-	return nil, nil
-}
-
+// isDDDAuthOverride decides which auth claims each DDD route is recorded
+// under. It MUST mirror the claims switch in api/http/contract_test.go
+// TestContracts prefix-for-prefix: the admin five prefixes get
+// Role+GlobalRole+TenantID, every other DDD prefix gets Role+TenantID, and
+// nothing outside /admin/* is ever signed as global_admin. Keeping these two
+// in lockstep is what makes re-recorded goldens byte-identical to committed.
 func isDDDAuthOverride(routePath string) (bool, iamport.TokenClaims) {
+	adminFull := iamport.TokenClaims{
+		Sub: "contract-admin", TenantID: "contract-tenant", Role: "admin", GlobalRole: "global_admin",
+	}
 	adminClaims := iamport.TokenClaims{Sub: "contract-admin", TenantID: "contract-tenant", Role: "admin"}
-	globalAdmin := iamport.TokenClaims{Sub: "contract-admin", GlobalRole: "global_admin"}
 	switch {
 	case strings.HasPrefix(routePath, "/admin/tenants"),
+		strings.HasPrefix(routePath, "/admin/providers"),
+		strings.HasPrefix(routePath, "/admin/models"),
 		strings.HasPrefix(routePath, "/admin/admins"),
 		strings.HasPrefix(routePath, "/admin/users"):
-		return true, globalAdmin
-	case strings.HasPrefix(routePath, "/admin/providers"), strings.HasPrefix(routePath, "/admin/models"):
-		return true, adminClaims
+		return true, adminFull
 	case strings.HasPrefix(routePath, "/tenant/"), strings.HasPrefix(routePath, "/workflows"),
 		strings.HasPrefix(routePath, "/workflow-runs"), strings.HasPrefix(routePath, "/workflow-approvals"),
 		strings.HasPrefix(routePath, "/operation-proposals"), strings.HasPrefix(routePath, "/scheduled-tasks"),
@@ -248,7 +99,7 @@ func main() {
 	gateway := llmgateway.NewGateway(nil, nil, nil).WithLogger(logger)
 	router := api.SetupRouter(cfg, logger, gateway, nil, nil, nil, nil)
 
-	ddRouter := apihttp.NewRouter(buildDDDContainer(cfg, key, logger, metrics))
+	ddRouter := apihttp.NewRouter(contracttest.BuildContainer(cfg, key, logger, metrics))
 	jwtSvc := iamtoken.NewJWTService(key)
 
 	// Phase 1: legacy router records ALL routes (unauth baseline).
@@ -273,6 +124,8 @@ func recordDDDRoutes(ddRouter *gin.Engine, jwtSvc iamport.TokenService, outDir s
 		"GET /evaluations/suites": true, "GET /evaluations/runs": true,
 		"GET /evaluations/candidates": true, "GET /evaluations/experiments": true,
 		"GET /evaluations/resources/:kind/:id/timeline": true,
+		"GET /evaluations/monitoring/resources":         true,
+		"GET /evaluations/monitoring/resources/trend":   true,
 		"POST /evaluations/candidates/:id/reject":       true,
 		"POST /evaluations/experiments/:id/pause":       true,
 		"POST /evaluations/experiments/:id/promote":     true,
@@ -342,9 +195,7 @@ func recordAuthRoute(router http.Handler, tokens iamport.TokenService, claims ia
 		c.WantBody = json.RawMessage(rec.Body.Bytes())
 	}
 	out, _ := json.MarshalIndent([]Case{c}, "", "  ")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		panic(err)
-	}
+	writeGolden(outPath, out)
 }
 
 func recordEvalRoute(router http.Handler, tokens iamport.TokenService, method, routePath, outPath string) {
@@ -355,6 +206,11 @@ func recordEvalRoute(router http.Handler, tokens iamport.TokenService, method, r
 		if strings.Contains(routePath, "/candidates/") {
 			path = strings.ReplaceAll(routePath, ":id", "candidate-1")
 		}
+	}
+	// 评测监控 GET 端点（spec §4.2）附加固定 query：resources 回显 window=from/to
+	// （空窗会兜底 live now，golden 不可复现）；trend 的 resource_kind+id 必填。
+	if method == http.MethodGet && strings.HasPrefix(routePath, "/evaluations/monitoring/") {
+		path = monitoringQueryPath(routePath, path)
 	}
 	c := Case{Name: "authenticated-success", Method: method, Path: path}
 	if method == http.MethodPost {
@@ -375,9 +231,17 @@ func recordEvalRoute(router http.Handler, tokens iamport.TokenService, method, r
 		c.WantBody = json.RawMessage(rec.Body.Bytes())
 	}
 	out, _ := json.MarshalIndent([]Case{c}, "", "  ")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		panic(err)
+	writeGolden(outPath, out)
+}
+
+// monitoringQueryPath 为评测监控 GET 端点附加确定性 query（spec §4.2）。固定
+// 窗口与 stub 样例的 time.Date 常量一致，保证 regen 逐字节可复现。
+func monitoringQueryPath(routePath, path string) string {
+	const fixedWindow = "from=2026-08-27T00:00:00Z&to=2026-09-03T00:00:00Z"
+	if strings.HasSuffix(routePath, "/trend") {
+		return path + "?resource_kind=skill&resource_id=resource-1&" + fixedWindow
 	}
+	return path + "?" + fixedWindow
 }
 
 // isReviewRoute 判断是否为 P1c 评审池路由（查询 + 决策）。
@@ -420,9 +284,7 @@ func recordReviewRoute(router http.Handler, tokens iamport.TokenService, method,
 		c.WantBody = json.RawMessage(rec.Body.Bytes())
 	}
 	out, _ := json.MarshalIndent([]Case{c}, "", "  ")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		panic(err)
-	}
+	writeGolden(outPath, out)
 }
 
 func recordSelfModifyRoute(router http.Handler, tokens iamport.TokenService, routePath, outPath string) {
@@ -450,9 +312,7 @@ func recordSelfModifyRoute(router http.Handler, tokens iamport.TokenService, rou
 		panic(fmt.Sprintf("self-modify: got status %d, want %d: %s", rec.Code, c.WantStatus, rec.Body.String()))
 	}
 	out, _ := json.MarshalIndent([]Case{c}, "", "  ")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		panic(err)
-	}
+	writeGolden(outPath, out)
 }
 
 // resolvePath replaces path params with placeholder IDs.
@@ -492,474 +352,8 @@ func recordRoute(router http.Handler, method, path, outPath string) {
 		}
 	}
 	out, _ := json.MarshalIndent(cases, "", "  ")
-	_ = os.WriteFile(outPath, out, 0o644)
+	writeGolden(outPath, out)
 }
-
-// ── Stub repos (matching contract_test.go) ──────────────────────────────
-
-type contractProvRepo struct{}
-
-func (contractProvRepo) Create(_ context.Context, _ *llmdomain.Provider) error { return nil }
-func (contractProvRepo) Get(_ context.Context, _ string) (*llmdomain.Provider, error) {
-	return &llmdomain.Provider{
-		ID: "contract-provider", Name: "stub", Kind: llmdomain.ProviderOpenAICompat,
-		BaseURL: "https://stub.example.com/v1", Enabled: true,
-		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}, nil
-}
-func (contractProvRepo) List(_ context.Context) ([]llmdomain.Provider, error) {
-	return nil, nil
-}
-func (contractProvRepo) GetMeta(_ context.Context, _ string) (*llmdomain.Provider, error) {
-	return &llmdomain.Provider{
-		ID: "contract-provider", Name: "stub", Kind: llmdomain.ProviderOpenAICompat,
-		BaseURL: "https://stub.example.com/v1", Enabled: true,
-		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}, nil
-}
-func (contractProvRepo) Update(_ context.Context, _ *llmdomain.Provider, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractProvRepo) Delete(_ context.Context, _ string) error { return nil }
-
-type contractModRepo struct{}
-
-func (contractModRepo) Create(_ context.Context, _ *llmdomain.Model) error { return nil }
-func (contractModRepo) Get(_ context.Context, _ string) (*llmdomain.Model, error) {
-	return nil, errStubNotFound
-}
-func (contractModRepo) List(_ context.Context, _ llmport.ModelFilter) ([]llmdomain.Model, error) {
-	return nil, nil
-}
-func (contractModRepo) Update(_ context.Context, _ *llmdomain.Model, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractModRepo) UpsertDiscovered(_ context.Context, _ string, _ []llmdomain.Model) ([]llmdomain.Model, error) {
-	return nil, nil
-}
-func (contractModRepo) Delete(_ context.Context, _ string) error         { return nil }
-func (contractModRepo) Toggle(_ context.Context, _ string, _ bool) error { return nil }
-
-type contractProvRuntime struct{}
-
-func (contractProvRuntime) ListModels(_ context.Context, _ llmdomain.Provider) ([]llmport.DiscoveredModel, error) {
-	return []llmport.DiscoveredModel{{Name: "mock-model-1"}, {Name: "mock-model-2"}}, nil
-}
-func (contractProvRuntime) Health(_ context.Context, _ llmdomain.Provider) error { return nil }
-
-// ── Workflow stubs ──────────────────────────────────────────────────────
-
-type contractDefRepo struct{}
-
-func (contractDefRepo) CreateDefinition(_ context.Context, _ string, _ *workflowdomain.Definition, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractDefRepo) GetDefinition(_ context.Context, _ string, _ string) (*workflowdomain.Definition, error) {
-	return &workflowdomain.Definition{
-		ID: "contract-def", Name: "stub-workflow", Description: "contract stub",
-		Revision: 1, Spec: workflowdomain.Spec{Nodes: []workflowdomain.Node{}, Edges: []workflowdomain.Edge{}},
-		InputSchema: workflowdomain.InputSchema{Fields: []workflowdomain.InputField{}},
-		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}, nil
-}
-func (contractDefRepo) UpdateDefinition(_ context.Context, _ string, _ *workflowdomain.Definition, _ int64, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractDefRepo) DeleteDefinition(_ context.Context, _ string, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractDefRepo) ListDefinitions(_ context.Context, _ string, _ workflowport.DefinitionListQuery) ([]workflowdomain.Definition, int, error) {
-	return nil, 0, nil
-}
-
-type contractVerRepo struct{}
-
-func (contractVerRepo) CreateVersion(_ context.Context, _ string, _ *workflowdomain.Version, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractVerRepo) GetVersion(_ context.Context, _ string, _ string) (*workflowdomain.Version, error) {
-	return nil, workflowdomain.ErrNotFound
-}
-func (contractVerRepo) NextVersionNumber(_ context.Context, _ string, _ string) (int64, error) {
-	return 1, nil
-}
-func (contractVerRepo) SetActiveVersion(_ context.Context, _ string, _ string, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractVerRepo) ListVersions(_ context.Context, _ string, _ string, _ workflowport.VersionListQuery) ([]workflowdomain.Version, int, error) {
-	return nil, 0, nil
-}
-
-type contractRunStore struct{}
-
-func (contractRunStore) FindRunByIdempotency(_ context.Context, _ string, _ string) (*workflowdomain.Run, error) {
-	return nil, workflowdomain.ErrNotFound
-}
-func (contractRunStore) CreateRun(_ context.Context, _ string, _ *workflowdomain.Run) error {
-	return nil
-}
-func (contractRunStore) GetRun(_ context.Context, _ string, _ string) (*workflowdomain.Run, error) {
-	return nil, workflowdomain.ErrNotFound
-}
-func (contractRunStore) UpdateRun(_ context.Context, _ string, _ *workflowdomain.Run) error {
-	return nil
-}
-func (contractRunStore) SaveAttempt(_ context.Context, _ string, _ workflowdomain.NodeAttempt) error {
-	return nil
-}
-func (contractRunStore) ListAttempts(_ context.Context, _ string, _ string) ([]workflowdomain.NodeAttempt, error) {
-	return nil, nil
-}
-func (contractRunStore) ListRuns(_ context.Context, _ string, _ workflowport.RunListQuery) ([]workflowdomain.Run, int, error) {
-	return nil, 0, nil
-}
-
-type contractCtrlRepo struct{}
-
-func (contractCtrlRepo) GetRun(_ context.Context, _ string, _ string) (*workflowdomain.Run, error) {
-	return nil, workflowdomain.ErrNotFound
-}
-func (contractCtrlRepo) ControlRun(_ context.Context, _ string, _ string, _ int64, _ workflowdomain.RunStatus, _ string, _ workflowdomain.Event) error {
-	return nil
-}
-func (contractCtrlRepo) ListApprovals(_ context.Context, _ string, _ string, _ bool) ([]workflowdomain.Approval, error) {
-	return nil, nil
-}
-func (contractCtrlRepo) DecideApproval(_ context.Context, _ string, _ string, _ int64, _ string, _ workflowdomain.ApprovalDecision, _ string, _ string, _ workflowdomain.Event) error {
-	return nil
-}
-func (contractCtrlRepo) ListEffectIntents(_ context.Context, _ string, _ string) ([]workflowdomain.EffectIntent, error) {
-	return nil, nil
-}
-func (contractCtrlRepo) ResolveEffect(_ context.Context, _ string, _ string, _ int64, _ workflowdomain.ManualAction, _ string, _ string, _ workflowdomain.Event) error {
-	return nil
-}
-
-type contractAgtExec struct{}
-
-func (contractAgtExec) ExecuteAgent(_ context.Context, _ string, _ string, _ string, _ string, _ string) (string, string, error) {
-	return "", "", errors.New("stub: agent execution unavailable")
-}
-
-// ── IAM stubs ───────────────────────────────────────────────────────────
-
-type contractAdminUR struct{}
-
-func (contractAdminUR) SearchUsers(_ context.Context, _ string, _ int) ([]iamport.AdminUser, error) {
-	return nil, nil
-}
-func (contractAdminUR) ListAdmins(_ context.Context) ([]iamport.AdminUser, error) {
-	return nil, nil
-}
-func (contractAdminUR) SetAdminRole(_ context.Context, _ string, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAdminUR) RemoveAdminRole(_ context.Context, _ string, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAdminUR) GetGlobalRole(_ context.Context, userID string) (iamdomain.GlobalRole, error) {
-	if userID == "contract-user" {
-		return iamdomain.GlobalRoleUser, nil
-	}
-	return iamdomain.GlobalRoleGlobalAdmin, nil
-}
-
-type contractAdminTR struct{}
-
-func (contractAdminTR) Count(_ context.Context, _ iamdomain.TenantFilter) (int, error) { return 0, nil }
-func (contractAdminTR) List(_ context.Context, _ iamdomain.TenantFilter) ([]iamdomain.Tenant, error) {
-	return nil, nil
-}
-func (contractAdminTR) Get(_ context.Context, _ string) (*iamdomain.Tenant, error) {
-	// 返回有效租户：GetTenant 详情与 DeleteTenant 审计投影都依赖 Get 成功。
-	return &iamdomain.Tenant{ID: "contract-id", Name: "contract-tenant", Slug: "contract-tenant", Plan: "free", Status: "active"}, nil
-}
-func (contractAdminTR) Create(_ context.Context, _ iamdomain.Tenant, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAdminTR) UpdatePatch(_ context.Context, _ string, _ iamdomain.TenantPatch, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAdminTR) HardDelete(_ context.Context, _ string, _ string, _ *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAdminTR) ProvisionSchema(_ context.Context, _ string) error { return nil }
-
-type contractTenantR struct{}
-
-func (contractTenantR) CountMembers(_ context.Context, _ string) (int, error) { return 0, nil }
-func (contractTenantR) ListMembers(_ context.Context, _ string, _ int, _ int) ([]iamdomain.Member, error) {
-	return nil, nil
-}
-func (contractTenantR) GetMemberRole(_ context.Context, _ string, _ string) (string, error) {
-	return "member", nil
-}
-func (contractTenantR) ListMembersByRole(_ context.Context, _ string, _ []string) ([]iamdomain.Member, error) {
-	return nil, nil
-}
-func (contractTenantR) UpdateMemberRole(_ context.Context, _ string, _ string, _ string) error {
-	return nil
-}
-func (contractTenantR) DeleteMember(_ context.Context, _ string, _ string) error { return nil }
-func (contractTenantR) GetTenantSettings(_ context.Context, _ string) (string, bool, []byte, error) {
-	return "stub-tenant", false, []byte(`{}`), nil
-}
-func (contractTenantR) UpdateTenantName(_ context.Context, _ string, _ string) error { return nil }
-func (contractTenantR) UpdateTenantSettings(_ context.Context, _ string, _ []byte) error {
-	return nil
-}
-func (contractTenantR) ListUserTenants(_ context.Context, _ string) ([]iamdomain.UserTenantInfo, error) {
-	return nil, nil
-}
-
-func (contractTenantR) ListAllTenants(context.Context) ([]iamdomain.UserTenantInfo, error) {
-	return nil, nil
-}
-
-type contractInvR struct{}
-
-func (contractInvR) Create(_ context.Context, _ iamdomain.TenantInvitation) error { return nil }
-func (contractInvR) ConsumeAndJoin(_ context.Context, _ iamdomain.InvitationJoinInput) (*iamdomain.InvitationJoinResult, error) {
-	return nil, errStubNotFound
-}
-func (contractInvR) ConsumeAndJoinExisting(_ context.Context, _ iamdomain.ExistingInvitationJoinInput) (*iamdomain.InvitationJoinResult, error) {
-	return nil, errStubNotFound
-}
-
-// ── Existing evaluation stubs ───────────────────────────────────────────
-
-type contractQueryRepo struct{}
-
-func (contractQueryRepo) Overview(context.Context, string) (domain.CenterOverview, error) {
-	return domain.CenterOverview{}, nil
-}
-func (contractQueryRepo) ListResources(context.Context, string, port.CenterFilter) (domain.ResourcePage, error) {
-	return domain.ResourcePage{Items: []domain.ResourceSummary{}}, nil
-}
-func (contractQueryRepo) ListSuites(context.Context, string, port.CenterFilter) (domain.SuitePage, error) {
-	return domain.SuitePage{Items: []domain.SuiteSummary{}}, nil
-}
-func (contractQueryRepo) ListRuns(context.Context, string, port.CenterFilter) (domain.RunPage, error) {
-	return domain.RunPage{Items: []domain.RunSummary{}}, nil
-}
-func (contractQueryRepo) ListCandidates(context.Context, string, port.CenterFilter) (domain.CandidatePage, error) {
-	return domain.CandidatePage{Items: []domain.CandidateSummary{}}, nil
-}
-func (contractQueryRepo) ListExperiments(context.Context, string, port.CenterFilter) (domain.ExperimentPage, error) {
-	return domain.ExperimentPage{Items: []domain.ExperimentSummary{}}, nil
-}
-func (contractQueryRepo) Timeline(context.Context, string, port.CenterFilter) (domain.TimelinePage, error) {
-	return domain.TimelinePage{Items: []domain.TimelineEvent{}}, nil
-}
-
-type contractExpRepo struct{}
-
-func (contractExpRepo) ValidatePrerequisites(context.Context, string, domain.ResourceRef,
-	domain.ResourceRef, string) error {
-	return nil
-}
-func (contractExpRepo) HasRunningExperiment(context.Context, string, string, string) (bool, error) {
-	return false, nil
-}
-func (contractExpRepo) ListPendingExperiments(context.Context, string, string, string) ([]domain.Experiment, error) {
-	return nil, nil
-}
-func (contractExpRepo) ListRunningExperiments(context.Context, string) ([]domain.Experiment, error) {
-	return nil, nil
-}
-func (contractExpRepo) Create(context.Context, string, domain.Experiment, domain.Deployment, *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractExpRepo) Get(context.Context, string, string) (domain.Experiment, bool, error) {
-	return domain.Experiment{}, false, nil
-}
-func (contractExpRepo) SaveDecision(context.Context, string, domain.Experiment, domain.Decision, domain.StageMetrics, string, string) (domain.Experiment, domain.Decision, error) {
-	return domain.Experiment{}, domain.DecisionHold, nil
-}
-func (contractExpRepo) ApplyCommand(context.Context, string, string, domain.ExperimentCommandAction, domain.ExperimentCommand) (domain.Experiment, error) {
-	return domain.Experiment{}, domain.ErrExperimentStateConflict
-}
-func (contractExpRepo) ResolveDeployment(context.Context, string, string, string) (domain.Deployment, bool, error) {
-	return domain.Deployment{}, false, nil
-}
-
-type contractCandRepo struct{}
-
-func (contractCandRepo) Reject(context.Context, string, string, domain.CandidateCommand) (domain.CandidateSummary, error) {
-	return domain.CandidateSummary{}, domain.ErrCandidateCommandConflict
-}
-
-// contractReviewItem 是评审池 golden 的确定性条目：pending 状态使 Decide 走真实
-// pending → reviewed 转换（reviewed_at 为 live 时间戳，由 WantBodyRE 容错）。
-func contractReviewItem() *domain.ReviewItem {
-	return &domain.ReviewItem{
-		ID:            "review-1",
-		SourceType:    domain.ReviewSourceObservation,
-		SourceID:      "obs-1",
-		RunID:         "run-1",
-		TraceID:       "trace-1",
-		ResourceKind:  domain.ResourceKindAgent,
-		ResourceID:    "agent-1",
-		TriggerReason: domain.TriggerLowConfidence,
-		RiskLevel:     domain.ReviewRiskMedium,
-		Snapshot:      map[string]any{"signals": map[string]any{"judge": []any{}}},
-		Status:        domain.ReviewStatusPending,
-		CreatedAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}
-}
-
-// contractReviewRepo 为评审池查询/决策 API 提供确定性响应（P1c；golden 文件与
-// 此 stub 的返回一一对应）。
-type contractReviewRepo struct{}
-
-func (contractReviewRepo) UpsertItem(_ context.Context, _ string, _ *domain.ReviewItem) (bool, error) {
-	return true, nil
-}
-
-func (contractReviewRepo) GetItem(_ context.Context, _, _ string) (*domain.ReviewItem, error) {
-	return contractReviewItem(), nil
-}
-
-func (contractReviewRepo) ListItems(_ context.Context, _ string, _ port.ReviewFilter,
-) ([]domain.ReviewItem, int64, error) {
-	return []domain.ReviewItem{*contractReviewItem()}, 1, nil
-}
-
-func (contractReviewRepo) MarkReviewed(_ context.Context, _, _ string, _ domain.HumanVerdict, _, _ string) error {
-	return nil
-}
-
-func (contractReviewRepo) CreateCalibrationSample(_ context.Context, _ string, _ *domain.CalibrationSample) error {
-	return nil
-}
-
-func (contractReviewRepo) CreateAttributionEntry(_ context.Context, _ string, _ *domain.AttributionEntry) error {
-	return nil
-}
-
-func (contractReviewRepo) CountPending(_ context.Context, _ string) (int64, error) {
-	return 0, nil
-}
-
-// ── Agent stubs ─────────────────────────────────────────────────────────
-
-type contractPropRepo struct{}
-
-func (contractPropRepo) Create(context.Context, agentdomain.ResourceChangeProposal, agentdomain.ProposalEvent) error {
-	return nil
-}
-func (contractPropRepo) Get(context.Context, string) (agentdomain.ResourceChangeProposal, error) {
-	return agentdomain.ResourceChangeProposal{}, agentdomain.ErrProposalNotFound
-}
-func (contractPropRepo) UpdateDraft(
-	context.Context, agentdomain.ResourceChangeProposal, agentdomain.ProposalEvent,
-) error {
-	return nil
-}
-func (contractPropRepo) Cancel(context.Context, string, string, time.Time) error  { return nil }
-func (contractPropRepo) Confirm(context.Context, string, string, time.Time) error { return nil }
-func (contractPropRepo) ClaimApplying(
-	context.Context, string, string, time.Time,
-) (agentdomain.ResourceChangeProposal, error) {
-	return agentdomain.ResourceChangeProposal{}, agentdomain.ErrProposalNotFound
-}
-func (contractPropRepo) Finish(
-	context.Context, string, agentdomain.ProposalStatus, agentdomain.ApplyResult, agentdomain.ProposalEvent,
-) error {
-	return nil
-}
-func (contractPropRepo) ListEvents(context.Context, string) ([]agentdomain.ProposalEvent, error) {
-	return nil, agentdomain.ErrProposalNotFound
-}
-
-type contractPropAuthorizer struct{}
-
-func (contractPropAuthorizer) AuthorizeProposal(
-	context.Context, string, string, agentdomain.ResourceKind, agentdomain.ProposalOperation,
-	agentdomain.ProposalAction,
-) error {
-	return nil
-}
-
-type contractAgentRepo struct{}
-
-func (contractAgentRepo) Register(context.Context, *agentdomain.AgentConfig, *auditdomain.ResourceChangeAuditEvent, []string) error {
-	return nil
-}
-func (contractAgentRepo) Get(context.Context, string) (*agentdomain.AgentConfig, bool, error) {
-	return nil, false, nil
-}
-func (contractAgentRepo) GetAll(context.Context) ([]*agentdomain.AgentConfig, error) {
-	return nil, nil
-}
-func (contractAgentRepo) Remove(context.Context, string, *auditdomain.ResourceChangeAuditEvent) error {
-	return nil
-}
-func (contractAgentRepo) Update(context.Context, *agentdomain.AgentConfig, *auditdomain.ResourceChangeAuditEvent, string, bool, *versioningdomain.Version) error {
-	return nil
-}
-func (contractAgentRepo) Rollback(context.Context, *agentdomain.AgentConfig, *auditdomain.ResourceChangeAuditEvent, string, string) error {
-	return nil
-}
-
-// Operation gate stubs: self-modify always lands as a pending proposal, so
-// the recorded response is the deterministic 202 pending_approval shape.
-type contractOpPropRepo struct{}
-
-func (contractOpPropRepo) Insert(context.Context, agentdomain.OperationProposal) error { return nil }
-func (contractOpPropRepo) GetByID(context.Context, string, string) (*agentdomain.OperationProposal, error) {
-	return nil, agentdomain.ErrOperationProposalNotFound
-}
-func (contractOpPropRepo) ListPending(context.Context, string) ([]agentdomain.OperationProposal, error) {
-	return nil, nil
-}
-func (contractOpPropRepo) UpdateStatus(
-	context.Context, string, string, agentdomain.OpProposalStatus, string, string,
-) error {
-	return nil
-}
-func (contractOpPropRepo) HasPending(context.Context, string, string) (bool, error) {
-	return false, nil
-}
-func (contractOpPropRepo) ConsumeApproved(context.Context, string, string, string) (bool, error) {
-	return false, nil
-}
-func (contractOpPropRepo) ListByProposer(context.Context, string, string) ([]agentdomain.OperationProposal, error) {
-	return nil, nil
-}
-func (contractOpPropRepo) ListHistory(context.Context, string, string, int, int) ([]agentdomain.OperationProposal, int, error) {
-	return nil, 0, nil
-}
-
-type contractOpUsageRepo struct{}
-
-func (contractOpUsageRepo) AddUsage(
-	context.Context, string, string, agentport.OperationType, time.Time, float64, int,
-) error {
-	return nil
-}
-func (contractOpUsageRepo) DailyUsage(
-	context.Context, string, string, agentport.OperationType, time.Time,
-) (agentport.DailyOperationUsage, error) {
-	return agentport.DailyOperationUsage{}, nil
-}
-
-type contractTenantRole struct{}
-
-func (contractTenantRole) ResolveTenantRole(context.Context, string, string) (string, error) {
-	return "admin", nil
-}
-
-type contractDashboardRepo struct{}
-
-func (contractDashboardRepo) Overview(context.Context, string) (platformdomain.DashboardOverview, error) {
-	return platformdomain.DashboardOverview{}, nil
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────
 
 func mustGeneratePEM() string {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -969,4 +363,12 @@ func mustGeneratePEM() string {
 	der := x509.MarshalPKCS1PrivateKey(key)
 	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
 	return string(pem.EncodeToMemory(block))
+}
+
+// writeGolden 写契约 golden 文件，统一补文件尾换行，使录制产物与提交态
+// 逐字节一致（regen 零 diff 守护依赖）。
+func writeGolden(outPath string, out []byte) {
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+		panic(fmt.Errorf("write golden %s: %w", outPath, err))
+	}
 }

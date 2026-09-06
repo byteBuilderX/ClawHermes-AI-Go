@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import type { QueryResultRow } from 'pg';
 
 import type { BrowserActor } from '../core/actors';
@@ -48,6 +48,13 @@ const closeDrawerIfOpen = async (page: Page) => {
     await expect(drawer).toBeHidden({ timeout: 10_000 });
     await expect(mask).toHaveCount(0, { timeout: 10_000 });
   }
+};
+
+const pickSuite = async (scope: Page | Locator, page: Page, suiteName: string) => {
+  // SuitePicker 两级选择：先选评测集（combobox aria-label="评测集"），发布套件会自动
+  // 装载版本链并把当前 active revision 设为默认；下拉选项按唯一 suiteName 过滤。
+  await scope.getByRole('combobox', { name: '评测集' }).click();
+  await page.locator('.ant-select-item-option-content').filter({ hasText: suiteName }).click();
 };
 
 const seedDecisionFixtures = async (
@@ -112,6 +119,7 @@ export const executeEvaluationPack = async ({
   const suffix = String(Date.now());
   const skillName = `E2E-Evaluation-Skill-${suffix}`;
   const agentName = `E2E-Evaluation-Agent-${suffix}`;
+  const suiteName = `E2E Stateful Suite ${suffix}`;
   let skillID = '';
   let agentID = '';
   let suiteID = '';
@@ -177,8 +185,10 @@ export const executeEvaluationPack = async ({
     const createDialog = page.getByRole('dialog', { name: '新建评测' });
     await createDialog.getByRole('combobox', { name: '目标资源' }).click();
     await page.locator('.ant-select-item-option-content').filter({ hasText: skillName }).click();
-    await createDialog.getByLabel('评测名称').fill(`E2E Stateful Suite ${suffix}`);
-    await createDialog.getByLabel('评测说明').fill('真实浏览器发起的 stateful evaluation');
+    // 两模式 radio（已有评测集 / 新建评测集）：切到「新建评测集」才渲染 create 表单。
+    await createDialog.locator('.ant-radio-button-wrapper').filter({ hasText: '新建评测集' }).click();
+    await createDialog.getByLabel('评测集名称').fill(suiteName);
+    await createDialog.getByLabel('评测集说明').fill('真实浏览器发起的 stateful evaluation');
     await createDialog.getByLabel('用例名称').fill('确定性 Skill 输出');
     await createDialog.getByLabel('测试输入').fill('执行 stateful evaluation');
     await createDialog.getByLabel('期望输出').fill('stateful sync completed');
@@ -210,15 +220,93 @@ export const executeEvaluationPack = async ({
     expect(run.trace_id,
       `evaluation trace missing; error=${run.error_message.slice(0, 240)} actual=${run.actual_output.slice(0, 240)}`).not.toBe('');
 
+    // ── 评测集管理页闭环：套件列表 / 详情 / 草稿用例增删 / legacy 补建草稿 ──────────
+    // 覆盖 5 个新 surface 能力：route /evaluations/suites、/evaluations/suites/:id，
+    // mutation POST draft、POST draft/cases、DELETE draft/cases/:caseId。
+    const suiteListResponse = waitFor(page, '/evaluations/suites', 'GET');
+    await page.goto(`${webURL}/evaluations/suites`);
+    expect((await suiteListResponse).status()).toBe(200);
+    await expect(page.getByRole('heading', { name: '评测集' })).toBeVisible();
+    const suiteRow = page.getByRole('row').filter({ hasText: suiteName });
+    await expect(suiteRow).toHaveCount(1, { timeout: 15_000 });
+
+    const suiteDetailResponse = waitFor(page, `/evaluations/suites/${suiteID}`, 'GET');
+    await suiteRow.getByRole('button', { name: /详\s*情/ }).click();
+    expect((await suiteDetailResponse).status()).toBe(200);
+    await expect(page.getByRole('heading', { name: suiteName })).toBeVisible();
+
+    // 添加草稿用例 → POST /evaluations/suites/:suiteId/draft/cases (201)
+    await page.getByRole('button', { name: '添加用例' }).click();
+    const addCaseDialog = page.getByRole('dialog', { name: '添加草稿用例' });
+    const addedCaseName = `E2E-Managed-Case-${suffix}`;
+    await addCaseDialog.getByLabel('用例名称').fill(addedCaseName);
+    await addCaseDialog.getByLabel('测试输入').fill('stateful management add case input');
+    await addCaseDialog.getByLabel('期望输出').fill('stateful management add case expected');
+    // Ant 会在恰好两个汉字的按钮文本间自动插入空格（添加 → 添 加），
+    // 故用 \s* 正则匹配，避免可访问名称不匹配导致点击超时。
+    const addCaseResponse = waitFor(page, `/evaluations/suites/${suiteID}/draft/cases`, 'POST');
+    await addCaseDialog.getByRole('button', { name: /添\s*加/ }).click();
+    const addedCase = await addCaseResponse;
+    expect(addedCase.status()).toBe(201);
+    const addedCaseID = (await addedCase.json() as { id: string }).id;
+    await expect.poll(async () => Number((await rows<{ count: string }>(pool, tenantID, `
+      SELECT count(*)::text AS count FROM eval_cases ec
+      JOIN eval_suite_revisions esr ON esr.id = ec.suite_revision_id
+      WHERE esr.suite_id=$1 AND esr.status='draft'`, [suiteID]))[0]?.count),
+    { timeout: 15_000 }).toBe(2);
+
+    // 重挂载草稿折叠面板使其全部展开，再删除新增用例 → DELETE .../draft/cases/:caseId (204)
+    await page.reload();
+    await expect(page.getByRole('heading', { name: suiteName })).toBeVisible();
+    const managedCasePanel = page.locator('.ant-collapse-item').filter({ hasText: addedCaseName });
+    await expect(managedCasePanel).toHaveCount(1, { timeout: 15_000 });
+    const deleteCaseResponse = waitFor(page, `/evaluations/suites/${suiteID}/draft/cases/${addedCaseID}`, 'DELETE');
+    await managedCasePanel.getByRole('button', { name: /删\s*除/ }).click();
+    const deleteCaseDialog = page.locator('.ant-modal-confirm').filter({ hasText: addedCaseName });
+    await deleteCaseDialog.getByRole('button', { name: /删\s*除/ }).click();
+    expect((await deleteCaseResponse).status()).toBe(204);
+    await expect.poll(async () => Number((await rows<{ count: string }>(pool, tenantID, `
+      SELECT count(*)::text AS count FROM eval_cases ec
+      JOIN eval_suite_revisions esr ON esr.id = ec.suite_revision_id
+      WHERE esr.suite_id=$1 AND esr.status='draft'`, [suiteID]))[0]?.count),
+    { timeout: 15_000 }).toBe(1);
+    await expect(managedCasePanel).toHaveCount(0, { timeout: 15_000 });
+
+    // 模拟 legacy 套件（已发布但无草稿）：删除当前 draft revision 并置空
+    // draft_revision_id，触发「从此版本新建草稿」→ POST /evaluations/suites/:suiteId/draft (200)
+    const legacyDraft = (await rows<{ draft_revision_id: string | null }>(pool, tenantID,
+      'SELECT draft_revision_id FROM eval_suites WHERE id=$1', [suiteID]))[0];
+    if (!legacyDraft?.draft_revision_id) throw new Error('suite expected an open draft before legacy simulation');
+    await mutate(pool, tenantID, 'DELETE FROM eval_suite_revisions WHERE id=$1', [legacyDraft.draft_revision_id]);
+    await mutate(pool, tenantID, 'UPDATE eval_suites SET draft_revision_id=NULL WHERE id=$1', [suiteID]);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: suiteName })).toBeVisible();
+    await expect(page.getByRole('button', { name: '从此版本新建草稿' })).toBeVisible({ timeout: 15_000 });
+    const startDraftResponse = waitFor(page, `/evaluations/suites/${suiteID}/draft`, 'POST');
+    await page.getByRole('button', { name: '从此版本新建草稿' }).click();
+    expect((await startDraftResponse).status()).toBe(200);
+    await expect.poll(async () => (await rows<{ draft_revision_id: string | null }>(pool, tenantID,
+      'SELECT draft_revision_id FROM eval_suites WHERE id=$1', [suiteID]))[0]?.draft_revision_id,
+    { timeout: 15_000 }).toBeTruthy();
+    await expect(page.getByRole('button', { name: '添加用例' })).toBeVisible({ timeout: 15_000 });
+
+    await page.goto(`${webURL}/evaluations`);
+    await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
+    evidence.ui.push('Evaluation suite list, detail, draft case add/delete, and legacy draft start completed through Chromium');
+    evidence.http.push('Suite list/detail GET, draft case POST/DELETE, and legacy draft POST returned successful browser-observed responses');
+    evidence.database.push('Suite draft revision and eval_cases reconciled after add, delete, and legacy start');
+
     let dialog = await openEvolution(page);
     let panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
     await page.locator('.ant-select-item-option-content').filter({ hasText: 'Skill' }).click();
     await panel.getByLabel('资源 ID').fill(skillID);
     await panel.getByLabel('稳定 Revision ID').fill(stableRevisionID);
-    await panel.getByLabel('Suite Revision ID').fill(suiteRevisionID);
     await panel.getByLabel('失败摘要').fill('输出需要更明确且可核验');
+    // SuitePicker 两级选择评测集并自动选 active 版本；选完前「生成候选」保持禁用。
+    await pickSuite(panel, page, suiteName);
     const optimizationResponse = waitFor(page, '/evaluations/optimizations', 'POST');
+    await expect(dialog.getByRole('button', { name: '生成候选' })).toBeEnabled({ timeout: 15_000 });
     await dialog.getByRole('button', { name: '生成候选' }).click();
     const optimized = await optimizationResponse;
     expect(optimized.status()).toBe(201);
@@ -228,12 +316,13 @@ export const executeEvaluationPack = async ({
 
     await page.getByRole('tab', { name: /候选版本/ }).click();
     const evaluatedRow = page.getByRole('row').filter({ hasText: candidates[1].id });
-    await evaluatedRow.getByRole('button', { name: '详情' }).click();
+    await evaluatedRow.getByRole('button', { name: /详\s*情/ }).click();
     const candidateDrawer = page.locator('.ant-drawer:visible');
     await candidateDrawer.getByRole('button', { name: '运行离线评测' }).click();
     const evaluationDialog = page.getByRole('dialog', { name: '运行候选离线评测' });
-    await evaluationDialog.getByLabel('Suite Revision ID').fill(suiteRevisionID);
+    await pickSuite(evaluationDialog, page, suiteName);
     const candidateRunResponse = waitFor(page, '/evaluations/runs', 'POST');
+    await expect(evaluationDialog.getByRole('button', { name: '开始评测' })).toBeEnabled({ timeout: 15_000 });
     await evaluationDialog.getByRole('button', { name: '开始评测' }).click();
     expect((await candidateRunResponse).status()).toBe(202);
     await expect(evaluationDialog).toBeHidden();
@@ -246,7 +335,7 @@ export const executeEvaluationPack = async ({
     await page.getByRole('tab', { name: /候选版本/ }).click();
 
     const rejectedRow = page.getByRole('row').filter({ hasText: candidates[0].id });
-    await rejectedRow.getByRole('button', { name: '详情' }).click();
+    await rejectedRow.getByRole('button', { name: /详\s*情/ }).click();
     const rejectResponse = waitFor(page, `/evaluations/candidates/${candidates[0].id}/reject`, 'POST');
     await page.getByRole('button', { name: '拒绝候选' }).click();
     const rejectDialog = page.getByRole('dialog', { name: '确认拒绝此候选版本？' });
@@ -263,8 +352,9 @@ export const executeEvaluationPack = async ({
     await panel.getByLabel('资源 ID').fill(skillID);
     await panel.getByLabel('稳定 Revision ID').fill(stableRevisionID);
     await panel.getByLabel('候选 Revision ID').fill(candidates[1].revision.revision_id);
-    await panel.getByLabel('Suite Revision ID').fill(suiteRevisionID);
+    await pickSuite(panel, page, suiteName);
     const experimentResponse = waitFor(page, '/evaluations/experiments', 'POST');
+    await expect(dialog.getByRole('button', { name: '创建金丝雀' })).toBeEnabled({ timeout: 15_000 });
     await dialog.getByRole('button', { name: '创建金丝雀' }).click();
     const experimentCreated = await experimentResponse;
     if (experimentCreated.status() !== 201) {
@@ -293,7 +383,7 @@ export const executeEvaluationPack = async ({
     await expect(dialog).toBeHidden();
 
     await page.getByRole('tab', { name: /金丝雀实验/ }).click();
-    await page.getByRole('row').filter({ hasText: experimentID }).getByRole('button', { name: '详情' }).click();
+    await page.getByRole('row').filter({ hasText: experimentID }).getByRole('button', { name: /详\s*情/ }).click();
     const experimentDrawer = page.locator('.ant-drawer:visible');
     await expect(experimentDrawer).toBeVisible();
     const pauseResponse = waitFor(page, `/evaluations/experiments/${experimentID}/pause`, 'POST');
@@ -312,7 +402,7 @@ export const executeEvaluationPack = async ({
     await page.reload();
     for (const fixture of fixtures) {
       await page.getByRole('tab', { name: /金丝雀实验/ }).click();
-      await page.getByRole('row').filter({ hasText: fixture.experiment }).getByRole('button', { name: '详情' }).click();
+      await page.getByRole('row').filter({ hasText: fixture.experiment }).getByRole('button', { name: /详\s*情/ }).click();
       const decisionDrawer = page.locator('.ant-drawer:visible');
       await expect(decisionDrawer).toBeVisible();
       const commandResponse = waitFor(page,
@@ -462,8 +552,13 @@ export const executeEvaluationPack = async ({
   }
   return [
     'evaluation.route.evaluations',
+    'evaluation.route.evaluations.suites',
+    'evaluation.route.evaluations.suites.id',
     'evaluation.mutation.post.evaluations.suites',
     'evaluation.mutation.post.evaluations.suites.suiteid.publish',
+    'evaluation.mutation.post.evaluations.suites.suiteid.draft',
+    'evaluation.mutation.post.evaluations.suites.suiteid.draft.cases',
+    'evaluation.mutation.delete.evaluations.suites.suiteid.draft.cases.caseid',
     'evaluation.mutation.post.evaluations.runs',
     'evaluation.mutation.post.evaluations.optimizations',
     'evaluation.mutation.post.evaluations.experiments',

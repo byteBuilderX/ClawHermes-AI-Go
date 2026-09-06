@@ -34,6 +34,13 @@ type agentRevisionExecutor interface {
 	ExecuteSkillScenarioRevision(context.Context, agentdomain.AgentRevision, agentapp.ExecRequest, agentapp.ExecMeta, []agentport.SkillActivation) (*agentapp.AgentResult, int, error)
 }
 
+// evalConversationOpener 打开一条受控评测会话（source='evaluation'，阶段 B §5.4）：
+// 同表同协议真历史，供会话剧本逐轮续跑。独立窄接口（不并入 agentRevisionExecutor）
+// 使既有 executor fake 零同步。
+type evalConversationOpener interface {
+	OpenEvalConversation(ctx context.Context, tenantID, agentID, userID string) (string, error)
+}
+
 // agentReadWriter provides read-write access to the Agent table for
 // applying published optimization revisions back to production agents.
 type agentReadWriter interface {
@@ -46,6 +53,9 @@ type agentEvaluationAdapter struct {
 	agents         agentRevisionExecutor
 	agentUpdater   agentReadWriter
 	modelValidator agentport.TenantChatModelValidator
+	// conversations 打开评测受控会话（阶段 B §5.4 会话逐轮执行）；nil 时 RunSession
+	// fail-close（单轮 ExecuteRevision 不需要它，保持既有 fake 零改动）。
+	conversations evalConversationOpener
 	// parameters is the registry source of truth: candidate patches are
 	// rejected unless their keys are registered (legacy hard-coded whitelists
 	// removed; key registrability lives in the registry alone).
@@ -266,44 +276,113 @@ func (a agentEvaluationAdapter) ExecuteRevision(
 	if a.agents == nil {
 		return evalport.ExecutionResult{}, errors.New("evaluation Agent adapter: executor unavailable")
 	}
-	ctx, err := evaluationAgentContext(ctx, tenantID, requestedBy)
+	ctx, snapshot, err := a.resolveExecutionSnapshot(ctx, tenantID, requestedBy, ref)
 	if err != nil {
 		return evalport.ExecutionResult{}, err
-	}
-	revision, snapshot, found, err := a.get(ctx, tenantID, ref)
-	if err != nil {
-		return evalport.ExecutionResult{}, err
-	}
-	if !found {
-		return evalport.ExecutionResult{}, evalport.ErrCenterResourceNotFound
-	}
-	if !revision.CanEvaluateOffline() {
-		return evalport.ExecutionResult{}, evaldomain.ErrRevisionNotPublished
 	}
 	query, err := evaluationCaseQuery(testCase.Input)
 	if err != nil {
 		return evalport.ExecutionResult{}, err
 	}
-	traceID := uuid.Must(uuid.NewV7()).String()
-	meta := agentapp.ExecMeta{
-		TenantID: tenantID, TraceID: traceID,
-		EvolutionTrace: agentapp.EvolutionTraceMetadata{Evaluation: true,
-			ResourceManifest: map[string]string{"agent:" + ref.ResourceID: ref.RevisionID}},
+	// 单轮 case（convID=""）：与旧路径语义一致（provider 每调用独立 trace）。
+	return a.executeOnce(ctx, snapshot, query, requestedBy, "", a.agentExecutionMeta(tenantID, ref))
+}
+
+// RunSession 实现 evalport.SessionRunner（阶段 B §5.4）：先开一条 source='evaluation'
+// 受控会话，再逐轮以同一会话续跑（query=turn.User）。任一轮失败返回已收集 partial
+// evidence + error，绝不吞错；Output 是 AgentResult.Output（string），投影为逐轮证据
+// 供应用层末轮终态断言与 turns 落库。
+func (a agentEvaluationAdapter) RunSession(
+	ctx context.Context, tenantID, requestedBy string, ref evaldomain.ResourceRef,
+	script evaldomain.EvalSessionScript,
+) ([]evaldomain.SessionTurnEvidence, error) {
+	if a.conversations == nil {
+		return nil, errors.New("evaluation Agent adapter: conversation opener unavailable")
 	}
+	if a.agents == nil {
+		return nil, errors.New("evaluation Agent adapter: executor unavailable")
+	}
+	ctx, snapshot, err := a.resolveExecutionSnapshot(ctx, tenantID, requestedBy, ref)
+	if err != nil {
+		return nil, err
+	}
+	convID, err := a.conversations.OpenEvalConversation(ctx, tenantID, ref.ResourceID, requestedBy)
+	if err != nil {
+		return nil, fmt.Errorf("evaluation Agent adapter: open evaluation conversation: %w", err)
+	}
+	meta := a.agentExecutionMeta(tenantID, ref)
+	evidences := make([]evaldomain.SessionTurnEvidence, 0, len(script.Turns))
+	for i, turn := range script.Turns {
+		exec, err := a.executeOnce(ctx, snapshot, turn.User, requestedBy, convID, meta)
+		if err != nil {
+			return evidences, err
+		}
+		evidences = append(evidences, evaldomain.SessionTurnEvidence{
+			Index: i, User: turn.User, Output: exec.Output.(string),
+			TraceID: exec.TraceID, Tokens: exec.Tokens, CostUSD: exec.CostUSD,
+			DurationMs: exec.DurationMs, Tools: exec.Tools,
+		})
+	}
+	return evidences, nil
+}
+
+// executeOnce 执行一次 agent 评测调用（单轮 case 与会话剧本逐轮共用）。convID 为空 =
+// 一次性单轮；非空 = 以 ExecRequest.ConversationID 续跑同一 source='evaluation' 受控
+// 会话——assembleOptions 映射 WithConversationID + loadConversationHistory 重载真实
+// 历史 → 会话剧本逐轮是真实多轮。每次调用生成独立 trace（逐轮证据各自可追溯）。
+func (a agentEvaluationAdapter) executeOnce(
+	ctx context.Context, snapshot agentdomain.AgentRevision, query, requestedBy, convID string,
+	meta agentapp.ExecMeta,
+) (evalport.ExecutionResult, error) {
+	meta.TraceID = uuid.Must(uuid.NewV7()).String()
 	// 评测执行注入执行快照（D6）：ctx 中评测上下文快照存在时投影为 agent 消费侧
 	// ExecutionSnapshot 并固定 canary pin，供 assembleOptions / 窗口解析读取固化值；
 	// 快照缺失（非评测链路）保持现状。
 	ctx, meta = a.injectExecutionSnapshot(ctx, meta)
 	result, duration, err := a.agents.ExecuteRevision(ctx, snapshot,
-		agentapp.ExecRequest{Query: query, UserID: requestedBy}, meta)
+		agentapp.ExecRequest{Query: query, UserID: requestedBy, ConversationID: convID}, meta)
 	if err != nil {
 		return evalport.ExecutionResult{}, fmt.Errorf("evaluation Agent adapter: execute revision: %w", err)
 	}
 	if result == nil {
 		return evalport.ExecutionResult{}, errors.New("evaluation Agent adapter: provider returned no result")
 	}
-	return evalport.ExecutionResult{Output: result.Output, TraceID: traceID, Tokens: result.TokensUsed,
+	return evalport.ExecutionResult{Output: result.Output, TraceID: meta.TraceID, Tokens: result.TokensUsed,
 		CostUSD: result.CostUSD, DurationMs: duration, Tools: mapToolObservations(result.ToolObservations)}, nil
+}
+
+// agentExecutionMeta 构造评测执行共用的 routing 元数据：TraceID 每次执行在 executeOnce
+// 内重新生成；canary pin 由 injectExecutionSnapshot 每轮投影。ref 标注评测资源的版本
+// 归属（EvolutionTrace）。
+func (a agentEvaluationAdapter) agentExecutionMeta(tenantID string, ref evaldomain.ResourceRef) agentapp.ExecMeta {
+	return agentapp.ExecMeta{
+		TenantID: tenantID,
+		EvolutionTrace: agentapp.EvolutionTraceMetadata{Evaluation: true,
+			ResourceManifest: map[string]string{"agent:" + ref.ResourceID: ref.RevisionID}},
+	}
+}
+
+// resolveExecutionSnapshot 加载已发布、可离线评测的 agent revision 并注入租户 ctx。
+// 单轮 ExecuteRevision 与会话 RunSession 共用同一 resolution（fail-closed：跨租户
+// 缺失 / 草稿一律拒绝执行）。
+func (a agentEvaluationAdapter) resolveExecutionSnapshot(
+	ctx context.Context, tenantID, requestedBy string, ref evaldomain.ResourceRef,
+) (context.Context, agentdomain.AgentRevision, error) {
+	ctx, err := evaluationAgentContext(ctx, tenantID, requestedBy)
+	if err != nil {
+		return nil, agentdomain.AgentRevision{}, err
+	}
+	revision, snapshot, found, err := a.get(ctx, tenantID, ref)
+	if err != nil {
+		return nil, agentdomain.AgentRevision{}, err
+	}
+	if !found {
+		return nil, agentdomain.AgentRevision{}, evalport.ErrCenterResourceNotFound
+	}
+	if !revision.CanEvaluateOffline() {
+		return nil, agentdomain.AgentRevision{}, evaldomain.ErrRevisionNotPublished
+	}
+	return ctx, snapshot, nil
 }
 
 // injectExecutionSnapshot 把 ctx 中的评测上下文快照投影为 agent 消费侧
@@ -694,3 +773,4 @@ func evaluationCaseQuery(input any) (string, error) {
 var _ evalport.ResourceAdapter = agentEvaluationAdapter{}
 var _ evalport.CandidateCreator = agentEvaluationAdapter{}
 var _ evalport.AgentRevisionProvider = agentEvaluationAdapter{}
+var _ evalport.SessionRunner = agentEvaluationAdapter{}

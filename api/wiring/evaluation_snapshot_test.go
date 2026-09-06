@@ -151,7 +151,7 @@ func newSnapshotCapturerFixture(t *testing.T) (*snapshotCapturer, *fakeAgentRevi
 func TestSnapshotCapturerCaptureGroupPicksCurrentVersion(t *testing.T) {
 	capturer, _ := newSnapshotCapturerFixture(t)
 
-	group, err := capturer.captureGroup(context.Background(), evaldomain.GroupEvaluation)
+	group, err := capturer.captureGroup(context.Background(), evaldomain.GroupEvaluation, nil)
 	require.NoError(t, err)
 	require.Equal(t, evaldomain.GroupEvaluation, group.GroupKey)
 	require.Equal(t, int64(3), group.VersionSeq)
@@ -164,7 +164,7 @@ func TestSnapshotCapturerCaptureGroupPicksCurrentVersion(t *testing.T) {
 func TestSnapshotCapturerCaptureGroupUnpublishedReturnsEmptyGroup(t *testing.T) {
 	capturer, _ := newSnapshotCapturerFixture(t)
 
-	group, err := capturer.captureGroup(context.Background(), "unpublished")
+	group, err := capturer.captureGroup(context.Background(), "unpublished", nil)
 	require.NoError(t, err)
 	require.Equal(t, "unpublished", group.GroupKey)
 	require.Zero(t, group.VersionSeq)
@@ -176,7 +176,7 @@ func TestSnapshotCapturerCaptureGroupPropagatesStoreError(t *testing.T) {
 	capturer.params = parametersapp.NewService(parametersdomain.NewParametersRegistry(),
 		&fakePlatformStore{err: context.DeadlineExceeded})
 
-	_, err := capturer.captureGroup(context.Background(), evaldomain.GroupEvaluation)
+	_, err := capturer.captureGroup(context.Background(), evaldomain.GroupEvaluation, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "capture evaluation group versions")
 }
@@ -197,9 +197,10 @@ func TestSnapshotCapturerCaptureFull(t *testing.T) {
 	require.Equal(t, "user-1", snap.CapturedBy)
 	require.False(t, snap.CapturedAt.IsZero())
 	require.Equal(t, evaldomain.GroupEvaluation, snap.Evaluation.GroupKey)
-	require.Len(t, snap.Execution, 2)
+	require.Len(t, snap.Execution, 3)
 	require.Equal(t, evaldomain.GroupAgent, snap.Execution[0].GroupKey)
 	require.Equal(t, evaldomain.GroupTrace, snap.Execution[1].GroupKey)
+	require.Equal(t, evaldomain.GroupMemory, snap.Execution[2].GroupKey)
 	// 窗口固化：modelCtx 32768 未触发 MaxContextWindowTokens 上限，agent 显式
 	// MaxContextTokens=8192 → ResolveAgentWindow 比例 clamp（32768×0.85=27852）
 	// 内保留显式值 8192；reserve 取显式 2048。
@@ -207,6 +208,86 @@ func TestSnapshotCapturerCaptureFull(t *testing.T) {
 	require.Equal(t, map[string]string{"mcp-1": "mcp-rev-9"}, snap.PinnedAssignments.MCPRevisions)
 	require.Equal(t, map[string]string{"kb-1": "kb-rev-2"}, snap.PinnedAssignments.KnowledgeRevisions)
 	require.Empty(t, snap.PinnedAssignments.SkillAgentRevision)
+}
+
+func TestSnapshotCapturerCaptureOverridePinsHistoricalAgentVersion(t *testing.T) {
+	capturer, _ := newSnapshotCapturerFixture(t)
+	// 替换参数服务为含 agent 历史 seq 1 的版本历史：对照重放（spec §4.3.4）
+	// 只有在历史版本仍存在时才能精确命中。
+	capturer.params = parametersapp.NewService(parametersdomain.NewParametersRegistry(),
+		&fakePlatformStore{versions: map[string][]port.PlatformVersion{
+			evaldomain.GroupEvaluation: {
+				{GroupKey: evaldomain.GroupEvaluation, VersionSeq: 3, IsCurrent: true, Snapshot: map[string]json.RawMessage{
+					"evaluation.judge.enabled": json.RawMessage(`true`),
+				}},
+			},
+			evaldomain.GroupAgent: {
+				{GroupKey: evaldomain.GroupAgent, VersionSeq: 1, IsCurrent: false, Snapshot: map[string]json.RawMessage{
+					"agent.temperature": json.RawMessage(`0.2`),
+				}},
+				{GroupKey: evaldomain.GroupAgent, VersionSeq: 5, IsCurrent: true, Snapshot: map[string]json.RawMessage{
+					"agent.max_iterations": json.RawMessage(`3`),
+				}},
+			},
+			evaldomain.GroupTrace: {
+				{GroupKey: evaldomain.GroupTrace, VersionSeq: 1, IsCurrent: true, Snapshot: map[string]json.RawMessage{}},
+			},
+		}})
+
+	// override agent→1：执行组锁定历史 seq 1（temperature 0.2），不取 IsCurrent seq 5；
+	// 无覆盖的 evaluation 组仍走 IsCurrent seq 3。
+	snap, err := capturer.Capture(context.Background(), "tenant-1", evalport.CaptureInput{
+		Resource: evaldomain.ResourceRef{
+			Kind: evaldomain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1",
+		},
+		SuiteRevisionID:      "suite-1",
+		RequestedBy:          "user-1",
+		PlatformSeqOverrides: map[string]int64{evaldomain.GroupAgent: 1},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	require.Equal(t, evaldomain.GroupAgent, snap.Execution[0].GroupKey)
+	require.Equal(t, int64(1), snap.Execution[0].VersionSeq)
+	require.Equal(t, 0.2, snap.Execution[0].Values["agent.temperature"])
+	require.Equal(t, int64(3), snap.Evaluation.VersionSeq)
+}
+
+func TestSnapshotCapturerCaptureOverridePinsHistoricalMemoryVersion(t *testing.T) {
+	capturer, _ := newSnapshotCapturerFixture(t)
+	capturer.params = parametersapp.NewService(parametersdomain.NewParametersRegistry(),
+		&fakePlatformStore{versions: map[string][]port.PlatformVersion{
+			evaldomain.GroupEvaluation: {
+				{GroupKey: evaldomain.GroupEvaluation, VersionSeq: 3, IsCurrent: true, Snapshot: map[string]json.RawMessage{
+					"evaluation.judge.enabled": json.RawMessage(`true`),
+				}},
+			},
+			evaldomain.GroupAgent: {
+				{GroupKey: evaldomain.GroupAgent, VersionSeq: 5, IsCurrent: true, Snapshot: map[string]json.RawMessage{}},
+			},
+			evaldomain.GroupTrace: {
+				{GroupKey: evaldomain.GroupTrace, VersionSeq: 1, IsCurrent: true, Snapshot: map[string]json.RawMessage{}},
+			},
+			evaldomain.GroupMemory: {
+				{GroupKey: evaldomain.GroupMemory, VersionSeq: 1, Snapshot: map[string]json.RawMessage{}},
+				{GroupKey: evaldomain.GroupMemory, VersionSeq: 2, IsCurrent: true, Snapshot: map[string]json.RawMessage{}},
+			},
+		}})
+
+	snap, err := capturer.Capture(context.Background(), "tenant-1", evalport.CaptureInput{
+		Resource: evaldomain.ResourceRef{
+			Kind: evaldomain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1",
+		},
+		SuiteRevisionID:      "suite-1",
+		RequestedBy:          "user-1",
+		PlatformSeqOverrides: map[string]int64{evaldomain.GroupMemory: 1},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	require.Len(t, snap.Execution, 3)
+	require.Equal(t, evaldomain.GroupAgent, snap.Execution[0].GroupKey)
+	require.Equal(t, evaldomain.GroupTrace, snap.Execution[1].GroupKey)
+	require.Equal(t, evaldomain.GroupMemory, snap.Execution[2].GroupKey)
+	require.Equal(t, int64(1), snap.Execution[2].VersionSeq) // override 命中历史 seq 1，非 IsCurrent 2
 }
 
 func TestSnapshotCapturerCaptureFailsClosedWhenParamsNil(t *testing.T) {

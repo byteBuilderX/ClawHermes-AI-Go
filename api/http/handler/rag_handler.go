@@ -203,10 +203,13 @@ func (h *RAGHandler) Query(c *gin.Context) {
 	sources := make([]gin.H, len(result.Sources))
 	for i, src := range result.Sources {
 		sources[i] = gin.H{
-			"document_id": src.DocumentID,
-			"content":     src.Content,
-			"chunk_index": src.ChunkIndex,
-			"score":       src.Score,
+			"document_id":    src.DocumentID,
+			"document_title": src.DocumentTitle,
+			"content":        src.Content,
+			"chunk_index":    src.ChunkIndex,
+			"score":          src.Score,
+			// workspace 传请求名：前端 SourceItem 用它判定可预览并传给预览抽屉。
+			"workspace": req.Workspace,
 		}
 	}
 	response := gin.H{
@@ -376,6 +379,24 @@ func (h *RAGHandler) ListWorkspaceVersions(c *gin.Context) {
 		out = append(out, workspaceVersionToResponse(v))
 	}
 	c.JSON(http.StatusOK, WorkspaceVersionsResponse{Versions: out})
+}
+
+// GetWorkspaceVersion returns one historical version's full content snapshot
+// (list metadata + edit-surface payload). The frontend "detail" drawer fetches
+// the clicked version and its direct parent (parentVersionId), then diffs the
+// two payloads field-by-field.
+func (h *RAGHandler) GetWorkspaceVersion(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	content, err := h.wsService.GetWorkspaceVersion(c.Request.Context(), tenantID, c.Param("name"), c.Param("versionID"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, workspaceVersionContentToResponse(content))
 }
 
 // RollbackWorkspace restores a deprecated historical version, repointing the

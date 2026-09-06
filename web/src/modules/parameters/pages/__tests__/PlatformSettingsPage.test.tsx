@@ -342,6 +342,8 @@ describe('PlatformSettingsPage', () => {
     base: number | null,
     message: string,
     createdBy: string,
+    // created_by 的可读名（服务端 join）；不传表示旧数据无该字段 → 前端回退 created_by。
+    createdByName?: string,
   ) => ({
     id,
     group_key: 'memory',
@@ -352,14 +354,15 @@ describe('PlatformSettingsPage', () => {
     base_version_id: base,
     message,
     created_by: createdBy,
+    created_by_name: createdByName,
     created_at: '2026-08-20T10:00:00Z',
   });
 
-  it('renders version history as config audit view with current badge and base diff', async () => {
+  it('renders version history as config audit view with current badge and detail drawer', async () => {
     vi.mocked(parametersApi.schema).mockResolvedValue(memoryDefs());
     vi.mocked(parametersApi.list).mockResolvedValue({ 'memory.enrich_temperature': 0.9 });
     vi.mocked(parametersApi.versions).mockResolvedValue([
-      version(2, 2, 'published', true, { 'memory.enrich_temperature': 0.9 }, 1, '调高温度', 'admin-1'),
+      version(2, 2, 'published', true, { 'memory.enrich_temperature': 0.9 }, 1, '调高温度', 'admin-1', '王五'),
       version(1, 1, 'published', false, { 'memory.enrich_temperature': 0.1 }, null, '初始化', 'system'),
     ]);
 
@@ -369,25 +372,28 @@ describe('PlatformSettingsPage', () => {
     expect(await screen.findByText('版本历史（配置变更审计）')).toBeInTheDocument();
     expect(screen.getByText('v2')).toBeInTheDocument();
     expect(screen.getByText('调高温度')).toBeInTheDocument();
-    expect(screen.getByText('admin-1')).toBeInTheDocument();
-    // backfill 的 system 归因展示为中文"系统"。
+    // 操作者优先展示服务端 join 出的可读名 created_by_name，而非原始 actor。
+    expect(screen.getByText('王五')).toBeInTheDocument();
+    expect(screen.queryByText('admin-1')).not.toBeInTheDocument();
+    // backfill 的 system 归因（无 users 命中 → created_by_name 回退原文）经映射显示为"系统"。
     expect(screen.getByText('系统')).toBeInTheDocument();
     // 服务端 is_current=true（production label 指向 v2）→ 当前生效徽标（v2 自身不回滚）。
     expect(screen.getByText('当前生效')).toBeInTheDocument();
     // antd 对双中文按钮自动插空格（"回 滚"），用正则匹配。
     expect(screen.getAllByRole('button', { name: /回\s*滚/ })).toHaveLength(1);
 
-    // 展开 v2 行 → 相对 base(v1) 的逐 key diff：0.1 → 0.9。
-    // diff 表里的参数名与表单 label 同名，用 getAllByText 断言展开区出现。
-    fireEvent.click(screen.getAllByRole('button', { name: /expand row/i })[0]);
+    // 每行都有「详情」→ 共享 Drawer：before = base_version_id(v1) 快照，after = 本版快照。
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    expect(await screen.findByText('版本 v2 字段变更')).toBeInTheDocument();
+    // Drawer 字段列用友好名 labelMap（表单 label 同名，打开前 1 份、打开后 2 份）。
     await waitFor(() =>
-      expect(screen.getAllByText('记忆丰富温度').length).toBeGreaterThanOrEqual(1),
+      expect(screen.getAllByText('记忆丰富温度').length).toBeGreaterThanOrEqual(2),
     );
     expect(screen.getByText('0.1')).toBeInTheDocument();
     expect(screen.getByText('0.9')).toBeInTheDocument();
   });
 
-  it('renders diff add/remove markers for keys missing on one side', async () => {
+  it('renders diff of keys present on only one side via the drawer', async () => {
     vi.mocked(parametersApi.schema).mockResolvedValue(memoryDefs());
     vi.mocked(parametersApi.list).mockResolvedValue({
       'memory.enrich_temperature': 0.9,
@@ -419,12 +425,17 @@ describe('PlatformSettingsPage', () => {
     render(<PlatformSettingsPage />);
     await screen.findByText('版本历史（配置变更审计）');
 
-    // v2 vs base(v1)：enrich_temperature 值变更、new_param 基线下不存在（新增）、
-    // removed_param 目标缺失（删除）——三类 diff 必须各自渲染标注。
-    fireEvent.click(screen.getAllByRole('button', { name: /expand row/i })[0]);
-    await waitFor(() => expect(screen.getByText('新增')).toBeInTheDocument());
-    expect(screen.getByText('删除')).toBeInTheDocument();
+    // v2 vs base(v1)：enrich_temperature 值变更(0.1→0.9)、new_param 基线下不存在
+    // （变更前 '—'）、removed_param 目标缺失（变更后 '—'）——共享 Drawer 对缺失侧
+    // 渲染占位符，无值侧不渲染新增/删除标签。
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    await screen.findByText('版本 v2 字段变更');
     expect(screen.getByText('0.9')).toBeInTheDocument();
+    expect(screen.getByText('0.1')).toBeInTheDocument();
+    expect(screen.getByText('x')).toBeInTheDocument();
+    expect(screen.getByText('old')).toBeInTheDocument();
+    // 仅存在单侧的两个字段各渲染一个 '—' 占位。
+    expect(screen.getAllByText('—')).toHaveLength(2);
   });
 
   it('publishes a draft version after confirmation', async () => {

@@ -364,3 +364,9 @@ func (*evaluationQueryRepoFake) Timeline(_ context.Context, tenantID string, _ p
 	}
 	return domain.TimelinePage{}, nil
 }
+func (*evaluationQueryRepoFake) MonitorResources(context.Context, string, port.MonitorFilter) (domain.MonitorResourcesPage, error) {
+	return domain.MonitorResourcesPage{}, nil
+}
+func (*evaluationQueryRepoFake) MonitorTrend(context.Context, string, port.MonitorFilter) (domain.MonitorTrendSeries, error) {
+	return domain.MonitorTrendSeries{}, nil
+}

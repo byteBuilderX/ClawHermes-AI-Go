@@ -22,10 +22,11 @@ type StoredRunner interface {
 var ErrJobNotFound = errors.New("evaluation job not found")
 
 type EnqueueRunInput struct {
-	Resource        domain.ResourceRef
-	SuiteRevisionID string
-	IdempotencyKey  string
-	RequestedBy     string
+	Resource             domain.ResourceRef
+	SuiteRevisionID      string
+	IdempotencyKey       string
+	RequestedBy          string
+	PlatformSeqOverrides map[string]int64
 }
 
 type JobService struct {
@@ -56,6 +57,7 @@ func (s *JobService) EnqueueRun(ctx context.Context, tenantID string, input Enqu
 	}
 	snapshot, err := s.capturer.Capture(ctx, tenantID, port.CaptureInput{
 		Resource: input.Resource, SuiteRevisionID: input.SuiteRevisionID, RequestedBy: input.RequestedBy,
+		PlatformSeqOverrides: input.PlatformSeqOverrides,
 	})
 	if err != nil {
 		return domain.EvaluationJob{}, fmt.Errorf("evaluation job: capture context snapshot: %w", err)

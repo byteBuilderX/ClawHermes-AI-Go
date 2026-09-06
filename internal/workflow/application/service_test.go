@@ -197,6 +197,12 @@ func TestDefinitionServicePublishesVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, def.ID, version.DefinitionID)
 	require.Equal(t, int64(1), version.Number)
+	// 发布者记为版本 created_by（fallback 路径 service 在入库前打戳），使版本历史
+	// 「操作者」可溯源；store 收到的版本已带操作者。
+	require.Equal(t, "u-1", version.CreatedBy)
+	stored := store.versions[version.ID]
+	require.NotNil(t, stored)
+	require.Equal(t, "u-1", stored.CreatedBy)
 }
 
 func TestDefinitionService_Rollback_MovesActivePointer(t *testing.T) {

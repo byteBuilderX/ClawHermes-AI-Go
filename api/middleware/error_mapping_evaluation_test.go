@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	evalapp "github.com/byteBuilderX/stratum/internal/evaluation/application"
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain"
 )
 
@@ -27,6 +28,9 @@ func TestMapEvaluationEvolutionErrors(t *testing.T) {
 		{domain.ErrOptimizationIdempotencyConflict, http.StatusConflict},
 		{domain.ErrFeedbackIdempotencyConflict, http.StatusConflict},
 		{domain.ErrFeedbackTraceForbidden, http.StatusForbidden},
+		// ErrSuiteDraftMissing（草稿缺失 409）：suite 编排错误归 application 哨兵，
+		// 单独列出以免与 domain 哨兵混淆。
+		{evalapp.ErrSuiteDraftMissing, http.StatusConflict},
 	}
 	for _, tc := range tests {
 		if got := MapErrorToStatus(tc.err); got != tc.want {

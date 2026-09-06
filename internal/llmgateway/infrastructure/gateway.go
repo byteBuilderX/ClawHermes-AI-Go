@@ -466,9 +466,11 @@ func (g *Gateway) invokeStream(
 		)
 		if resp.Usage.PromptTokens > 0 {
 			g.metrics.IncLLMTokenUsage(link.Model, "prompt", int64(resp.Usage.PromptTokens))
+			g.metrics.RecordLLMTokenHistogram(link.Model, "prompt", float64(resp.Usage.PromptTokens))
 		}
 		if resp.Usage.CompletionTokens > 0 {
 			g.metrics.IncLLMTokenUsage(link.Model, "completion", int64(resp.Usage.CompletionTokens))
+			g.metrics.RecordLLMTokenHistogram(link.Model, "completion", float64(resp.Usage.CompletionTokens))
 		}
 	} else if err != nil {
 		llmGWSpan.RecordError(err)

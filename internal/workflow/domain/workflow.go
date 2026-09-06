@@ -212,14 +212,17 @@ func (d *Definition) UpdateDraft(name, description string, spec Spec, expectedRe
 }
 
 type Version struct {
-	ID           string      `json:"id"`
-	DefinitionID string      `json:"definition_id"`
-	Number       int64       `json:"version"`
-	Name         string      `json:"name"`
-	Description  string      `json:"description"`
-	Spec         Spec        `json:"spec"`
-	InputSchema  InputSchema `json:"input_schema"`
-	CreatedAt    time.Time   `json:"created_at"`
+	ID           string `json:"id"`
+	DefinitionID string `json:"definition_id"`
+	Number       int64  `json:"version"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	// CreatedBy 是发布该版本的操作用户 id（版本历史「操作者」原始 id）。展示名由
+	// application 经 ActorNameResolver 现算（CreatedByName），不进 domain。
+	CreatedBy   string      `json:"created_by"`
+	Spec        Spec        `json:"spec"`
+	InputSchema InputSchema `json:"input_schema"`
+	CreatedAt   time.Time   `json:"created_at"`
 }
 
 func (d *Definition) Publish(id string, number int64) (*Version, error) {

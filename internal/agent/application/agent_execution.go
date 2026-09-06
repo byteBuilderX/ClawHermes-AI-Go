@@ -175,6 +175,26 @@ func (s *AgentService) ensureConversation(ctx context.Context, tenantID, agentID
 	req.ConversationID = conv.ID
 }
 
+// OpenEvalConversation 打开一条评测驱动的受控会话（source=evaluation），属主为
+// userID（评测 requestedBy）。评测会话与手动/工作流会话同表同协议（真历史、
+// 逐轮续跑、按 user_id 加载历史），生产默认会话列表对其隐藏，避免污染用户工作台。
+// 返回会话 ID，供评测 wiring 在每次评测会话启动时写入并逐轮续跑。ChatStore 未装配时
+// fail-closed 报错，绝不静默返回空串。
+func (s *AgentService) OpenEvalConversation(ctx context.Context, tenantID, agentID, userID string) (string, error) {
+	if s.deps.ChatStore == nil {
+		return "", fmt.Errorf("agent service: open eval conversation: chat store not configured")
+	}
+	createCtx, createCancel := context.WithTimeout(ctx, constants.AgentDBQueryTimeout)
+	conv, err := s.deps.ChatStore.CreateConversation(
+		createCtx, tenantID, agentID, userID, "评测会话", constants.ChatConversationSourceEvaluation,
+	)
+	createCancel()
+	if err != nil {
+		return "", fmt.Errorf("agent service: open eval conversation: %w", err)
+	}
+	return conv.ID, nil
+}
+
 func executionSubject(req ExecRequest, meta ExecMeta) string {
 	if req.ConversationID != "" {
 		return req.ConversationID

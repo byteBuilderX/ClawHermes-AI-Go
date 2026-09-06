@@ -2,7 +2,7 @@
   {
     "name": "authenticated-success",
     "method": "DELETE",
-    "path": "/tenant/members/:user_id",
+    "path": "/tenant/members/contract-user",
     "want_status": 200,
     "want_body": {
       "message": "member removed"

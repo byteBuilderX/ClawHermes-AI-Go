@@ -17,6 +17,13 @@ type CenterFilter struct {
 	Limit                                    int
 }
 
+// MonitorFilter 评测监控聚合查询过滤（窗口必填由 application 兜底近 7 天）。
+type MonitorFilter struct {
+	ResourceKind, ResourceID string
+	From, To                 *time.Time
+	Limit                    int
+}
+
 type CenterQueryRepository interface {
 	Overview(context.Context, string) (domain.CenterOverview, error)
 	ListResources(context.Context, string, CenterFilter) (domain.ResourcePage, error)
@@ -25,6 +32,8 @@ type CenterQueryRepository interface {
 	ListCandidates(context.Context, string, CenterFilter) (domain.CandidatePage, error)
 	ListExperiments(context.Context, string, CenterFilter) (domain.ExperimentPage, error)
 	Timeline(context.Context, string, CenterFilter) (domain.TimelinePage, error)
+	MonitorResources(context.Context, string, MonitorFilter) (domain.MonitorResourcesPage, error)
+	MonitorTrend(context.Context, string, MonitorFilter) (domain.MonitorTrendSeries, error)
 }
 
 type ExecutionResult struct {
@@ -60,6 +69,9 @@ type JudgeRequest struct {
 	// ToolSequence 是执行链路工具调用序列文本（§6.5 step_judge 输入）；
 	// 空 = 无需步骤级评分。
 	ToolSequence string
+	// Transcript 是会话剧本逐轮证据的纯文本渲染（阶段 B §4.3 judge 会话调用形态：
+	// 判「末轮是否到达目标/守住探针」）；空 = 非会话（单轮）case 无需 transcript。
+	Transcript string
 }
 
 type ResourceAdapter interface {
@@ -70,13 +82,42 @@ type ResourceAdapter interface {
 	SafeSummary(context.Context, string, domain.ResourceRef) (map[string]any, error)
 }
 
+// SessionRunner 是可选能力接口：会话剧本 case（阶段 B §5.4）的 ResourceAdapter
+// 之上的能力接口。runCase 会话分支对 adapter 做类型断言分派；adapter 未实现
+// （单轮知识检索等）时 fail-close 报错，绝不静默退化为单轮执行。
+type SessionRunner interface {
+	RunSession(
+		ctx context.Context, tenantID, requestedBy string, ref domain.ResourceRef,
+		script domain.EvalSessionScript,
+	) ([]domain.SessionTurnEvidence, error)
+}
+
 type RunRepository interface {
 	SaveRun(ctx context.Context, tenantID string, run domain.EvalRun) error
 	GetRun(ctx context.Context, tenantID, runID string) (domain.EvalRun, bool, error)
+	// FindLatestCompletedRunForResource 返回该 resource（kind+id）+ suite revision 最近一条
+	// 已完成（status='succeeded'）run；无 → (nil, nil)。供 run 级回归对照与发布哨兵定位基线
+	// run（T8 定义、T12 消费）。
+	FindLatestCompletedRunForResource(
+		ctx context.Context, tenantID string, ref domain.ResourceRef, suiteRevisionID string,
+	) (*domain.EvalRun, error)
+	// FindLatestCompletedRunForPlatformSeq 返回 tenant 下最近一条 completed run，其
+	// context_snapshot 中 groupKey 组 version_seq == seq（在指定平台配置版本下执行的最近
+	// run）；无 → (nil, nil)。多租户回滚验证与发布哨兵共用（spec §3.4-3）。
+	FindLatestCompletedRunForPlatformSeq(
+		ctx context.Context, tenantID, groupKey string, seq int64,
+	) (*domain.EvalRun, error)
 }
 
 type SuiteRepository interface {
 	CreateSuite(ctx context.Context, tenantID string, suite domain.EvalSuite, revision domain.EvalSuiteRevision) error
+	// GetSuite 返回套件自身元信息（含 created_at 与 active/draft revision
+	// 指针）；套件不存在时 found=false。
+	GetSuite(ctx context.Context, tenantID, suiteID string) (domain.EvalSuite, bool, error)
+	// ListSuiteRevisions 返回套件全部 revision（含当前草稿与历史已发布版本）的
+	// 轻量 meta，不装载 cases；版本号降序、草稿/未编号 revision 垫底。版本列
+	// 表页与详情元信息聚合共用。
+	ListSuiteRevisions(ctx context.Context, tenantID, suiteID string) ([]domain.SuiteRevisionMeta, error)
 	GetDraftRevision(ctx context.Context, tenantID, suiteID string) (domain.EvalSuiteRevision, bool, error)
 	// GetActiveRevision 返回套件当前已发布（active）revision；从未发布的
 	// 套件或套件不存在时 found=false。矩阵评测 seed 复用已发布基准集用。
@@ -127,6 +168,20 @@ type JobRepository interface {
 	Claim(ctx context.Context, tenantID, workerID string, lease time.Duration) (*domain.EvaluationJob, error)
 	Complete(ctx context.Context, tenantID, jobID, resultID string) error
 	Fail(ctx context.Context, tenantID, jobID, errorMessage string) error
+}
+
+// JobPlatformVerifyRepo 复用既有 evaluation_jobs 表（无 DDL；job_type 列无 CHECK）。
+type JobPlatformVerifyRepo interface {
+	// EnqueuePlatformVerify 幂等插入（job_type=domain.JobTypePlatformVerify，
+	// ON CONFLICT (idempotency_key) DO NOTHING）；返回是否新插入（已存在 → false，
+	// 调用方据此不重复 +queued）。
+	EnqueuePlatformVerify(
+		ctx context.Context, tenantID string, p domain.PlatformVerifyPayload, idempotencyKey, createdBy string,
+	) (bool, error)
+	// ClaimPlatformVerify 只取本租户 job_type='platform_verify' 的一条（queued/running 过期）。
+	ClaimPlatformVerify(
+		ctx context.Context, tenantID, workerID string, lease time.Duration,
+	) (*domain.PlatformVerifyJob, error)
 }
 
 type CandidateCreator interface {
@@ -273,8 +328,11 @@ type SnapshotCapturer interface {
 }
 
 // CaptureInput 描述一次快照捕获：被测资源 + 评测套件 revision + 请求者。
+// PlatformSeqOverrides 按平台组（evaluation/agent/trace groupKey）指定历史版本
+// version_seq 覆盖（对照确认 run 重放）；空 = 现 IsCurrent 语义。
 type CaptureInput struct {
-	Resource        domain.ResourceRef
-	SuiteRevisionID string
-	RequestedBy     string
+	Resource             domain.ResourceRef
+	SuiteRevisionID      string
+	RequestedBy          string
+	PlatformSeqOverrides map[string]int64
 }

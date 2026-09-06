@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/byteBuilderX/stratum/pkg/constants"
 )
 
 func TestRegistryRegistersAllBuiltinKeys(t *testing.T) {
@@ -428,6 +430,97 @@ func TestFactCheckCitationAndTemperatureRegistered(t *testing.T) {
 		}
 		if def.Sensitive {
 			t.Errorf("%s must not be Sensitive", tc.key)
+		}
+	}
+}
+
+// TestJudgeRubricAndOptimizerSystemPlatformed pins the prompt platformization
+// contract (spec 2026-09-04): evaluation.judge.rubric / evaluation.optimizer
+// .system_prompt 平台级暴露为多行 textarea、不进入优化搜索空间（Optimizable=false），
+// 且注册默认值 == pkg/constants 常量——开箱可见值 == 内置兜底 byte-identical，永不漂移。
+func TestJudgeRubricAndOptimizerSystemPlatformed(t *testing.T) {
+	r := NewParametersRegistry()
+	cases := []struct {
+		key      string
+		defText  string // pkg/constants 单一来源文本
+		platform bool
+	}{
+		{"evaluation.judge.rubric", constants.EvaluationJudgeDefaultRubric, true},
+		{"evaluation.optimizer.system_prompt", constants.EvaluationOptimizerSystemPrompt, true},
+	}
+	for _, tc := range cases {
+		def, ok := r.Get(tc.key)
+		if !ok {
+			t.Fatalf("%s not registered", tc.key)
+		}
+		if tc.platform && def.Scope != ScopePlatform {
+			t.Errorf("%s scope = %q, want platform", tc.key, def.Scope)
+		}
+		if def.Category != "evaluation" {
+			t.Errorf("%s category = %q, want evaluation", tc.key, def.Category)
+		}
+		if def.Optimizable {
+			t.Errorf("%s must not be optimizable (optimizer must not rewrite its own judge/rubric)", tc.key)
+		}
+		if def.VisualHint.Control != ControlTextarea {
+			t.Errorf("%s control = %q, want textarea", tc.key, def.VisualHint.Control)
+		}
+		if def.Sensitive {
+			t.Errorf("%s must not be Sensitive: platform settings page never renders sensitive params", tc.key)
+		}
+		if got, _ := def.Default.(string); got != tc.defText {
+			t.Errorf("%s default != pkg/constants 常量（平台默认与内置兜底必须 byte-identical）", tc.key)
+		}
+	}
+}
+
+// TestRegistryEveryKeyHasRiskTier 守护 O3 不变量：每个注册键都必须有非空 RiskTier，
+// 且与 DefaultRiskTierForKey 一致（显式声明不允许漂移出分类表）。
+func TestRegistryEveryKeyHasRiskTier(t *testing.T) {
+	r := NewParametersRegistry()
+	for _, def := range r.Schema() {
+		switch def.RiskTier {
+		case RiskTierHigh, RiskTierMedium, RiskTierLow:
+		default:
+			t.Fatalf("key %s risk tier %q must be one of high/medium/low", def.Key, def.RiskTier)
+		}
+		if want := DefaultRiskTierForKey(def.Scope, def.Key); def.RiskTier != want {
+			t.Fatalf("key %s risk tier %q != DefaultRiskTierForKey %q", def.Key, def.RiskTier, want)
+		}
+	}
+}
+
+// TestRegistryRiskTierClassifiesGateRelevantKeys 守护 O3 high 名单与关键 medium/low 归类。
+func TestRegistryRiskTierClassifiesGateRelevantKeys(t *testing.T) {
+	r := NewParametersRegistry()
+	cases := []struct {
+		key  string
+		want RiskTier
+	}{
+		{"agent.model", RiskTierHigh},         // 资源 high（§7.2）
+		{"mcp.enabled_tools", RiskTierHigh},   // 资源 high（§7.2）
+		{"agent.system_prompt", RiskTierHigh}, // 平台 high（§7.2）
+		{"evaluation.judge.model", RiskTierHigh},
+		{"evaluation.optimizer.model", RiskTierHigh},
+		{"agent.factcheck.judge.model", RiskTierHigh},
+		{"memory.embedding_model", RiskTierHigh},
+		{"memory.extraction_model", RiskTierHigh},
+		{"memory.reflection_model", RiskTierHigh},
+		{"rag.top_k", RiskTierMedium},                    // 资源 medium
+		{"agent.reasoning_effort", RiskTierMedium},       // 资源 medium
+		{"agent.compaction_temperature", RiskTierMedium}, // 平台 medium（_temperature 后缀）
+		{"agent.factcheck.judge.prompt", RiskTierMedium}, // 平台 medium（.prompt 类型叶，点号分层）
+		{"evaluation.judge.temperature", RiskTierMedium}, // 平台 medium（.temperature 类型叶，§7.2）
+		{"agent.temperature", RiskTierLow},               // 资源采样键不落平台后缀规则
+		{"evaluation.judge.enabled", RiskTierLow},        // 开关默认 low
+	}
+	for _, tc := range cases {
+		def, ok := r.Get(tc.key)
+		if !ok {
+			t.Fatalf("key %s not registered", tc.key)
+		}
+		if def.RiskTier != tc.want {
+			t.Fatalf("key %s risk tier = %q, want %q", tc.key, def.RiskTier, tc.want)
 		}
 	}
 }

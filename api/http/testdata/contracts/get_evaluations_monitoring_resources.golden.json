@@ -1,0 +1,112 @@
+[
+  {
+    "name": "authenticated-success",
+    "method": "GET",
+    "path": "/evaluations/monitoring/resources?from=2026-08-27T00:00:00Z\u0026to=2026-09-03T00:00:00Z",
+    "want_status": 200,
+    "want_body": {
+      "items": [
+        {
+          "resource_kind": "skill",
+          "resource_id": "resource-1",
+          "sample_count": 128,
+          "quality": [
+            {
+              "dimension": "faithfulness",
+              "pass_rate": 0.92,
+              "avg_score": 0.92,
+              "avg_confidence": 0.87,
+              "samples": 128
+            }
+          ],
+          "behavior": {
+            "rule_hits": 15,
+            "retry_count": 3,
+            "escalation_count": 1,
+            "abandonment_count": 0,
+            "verdict": {
+              "pass": 120,
+              "flag": 6,
+              "block": 2
+            }
+          },
+          "cost": {
+            "total_tokens": 154000,
+            "total_cost_usd": 0.42,
+            "avg_latency_ms": 1800,
+            "p95_latency_ms": 5200
+          },
+          "process": {
+            "process_pass_rate": 0.67,
+            "run_id": "run-9",
+            "run_created_at": "2026-09-02T08:00:00Z"
+          }
+        },
+        {
+          "resource_kind": "agent",
+          "resource_id": "agent-2",
+          "sample_count": 64,
+          "quality": [
+            {
+              "dimension": "relevance",
+              "pass_rate": 0.9,
+              "avg_score": 0.9,
+              "avg_confidence": 0.8,
+              "samples": 64
+            },
+            {
+              "dimension": "helpfulness",
+              "pass_rate": 0.83,
+              "avg_score": 0.83,
+              "avg_confidence": 0.76,
+              "samples": 64
+            }
+          ],
+          "behavior": {
+            "rule_hits": 4,
+            "retry_count": 0,
+            "escalation_count": 0,
+            "abandonment_count": 1,
+            "verdict": {
+              "pass": 60,
+              "flag": 4,
+              "block": 0
+            }
+          },
+          "cost": {
+            "total_tokens": 82000,
+            "total_cost_usd": 0.21,
+            "avg_latency_ms": null,
+            "p95_latency_ms": null
+          },
+          "process": null
+        }
+      ],
+      "window": {
+        "from": "2026-08-27T00:00:00Z",
+        "to": "2026-09-03T00:00:00Z"
+      }
+    }
+  },
+  {
+    "name": "rejects-resource-id-without-kind",
+    "method": "GET",
+    "path": "/evaluations/monitoring/resources?resource_id=only",
+    "want_status": 400,
+    "want_body_regex": "\\{\"error\":\"[^\"]*\"\\}"
+  },
+  {
+    "name": "rejects-invalid-resource-kind",
+    "method": "GET",
+    "path": "/evaluations/monitoring/resources?resource_kind=bad",
+    "want_status": 400,
+    "want_body_regex": "\\{\"error\":\"[^\"]*\"\\}"
+  },
+  {
+    "name": "rejects-from-after-to",
+    "method": "GET",
+    "path": "/evaluations/monitoring/resources?resource_kind=skill&from=2026-09-03T00:00:00Z&to=2026-09-01T00:00:00Z",
+    "want_status": 400,
+    "want_body_regex": "\\{\"error\":\"[^\"]*\"\\}"
+  }
+]

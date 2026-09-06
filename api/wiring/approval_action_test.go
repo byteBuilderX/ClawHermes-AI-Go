@@ -8,9 +8,13 @@ import (
 	agentdomain "github.com/byteBuilderX/stratum/internal/agent/domain"
 	"github.com/byteBuilderX/stratum/internal/agent/domain/port"
 	evaldomain "github.com/byteBuilderX/stratum/internal/evaluation/domain"
+	evalport "github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
 	mcpapp "github.com/byteBuilderX/stratum/internal/mcp/application"
 	mcpdomain "github.com/byteBuilderX/stratum/internal/mcp/domain"
 	mcp "github.com/byteBuilderX/stratum/internal/mcp/infrastructure"
+	paramport "github.com/byteBuilderX/stratum/internal/parameters/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/constants"
+	"github.com/byteBuilderX/stratum/pkg/observability"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -52,15 +56,16 @@ func TestApprovalActionExecutorSubjectDispatch(t *testing.T) {
 	})
 }
 
-// TestEvaluationOperationsComplete 防 dispatch table 遗漏：11 个写 op 必须全部注册，
+// TestEvaluationOperationsComplete 防 dispatch table 遗漏：14 个写 op 必须全部注册，
 // 否则审批执行与直接执行路径分叉（D4 核心不变量）。
 func TestEvaluationOperationsComplete(t *testing.T) {
 	ops := []string{
 		"create_suite", "publish_suite", "generate_suite_cases", "enqueue_run",
 		"create_experiment", "pause_experiment", "promote_experiment", "rollback_experiment",
+		"rollback_platform", "rollback_resource", "publish_platform_version",
 		"reject_candidate", "create_baseline", "generate_optimization",
 	}
-	require.Len(t, evaluationOperations, len(ops), "dispatch table must cover exactly the 11 evaluation write operations")
+	require.Len(t, evaluationOperations, len(ops), "dispatch table must cover exactly the 14 evaluation write operations")
 	for _, op := range ops {
 		require.NotNil(t, evaluationOperations[op], "operation %q missing from dispatch table", op)
 	}
@@ -266,4 +271,167 @@ func TestAsStringSliceBothForms(t *testing.T) {
 			require.Equal(t, tc.want, asStringSlice(tc.args, "editors"))
 		})
 	}
+}
+
+// gateActionRecorder 记录 IncEvalGateAction，供 auto_refused 计数断言（R28）。
+// 内嵌 NoopMetrics 免实现 MetricsProvider 全接口；指针接收者覆盖计数方法。
+type gateActionRecorder struct {
+	observability.NoopMetrics
+	actions []string
+}
+
+func (r *gateActionRecorder) IncEvalGateAction(layer, action string) {
+	r.actions = append(r.actions, layer+":"+action)
+}
+
+// fakePlatformOps 是 platformVersionOps 的最小内存实现：记录 Rollback/Publish/
+// UpdateEvalState 收到的参数，Versions 返回预置版本列表，供平台三分支 happy/failure 单测。
+type fakePlatformOps struct {
+	versions     []paramport.PlatformVersion
+	rollbackID   int64
+	publishID    int64
+	lastState    string
+	lastStateSeq int64
+	err          error // 非 nil 时所有方法返回该错误（fail-closed 上抛）
+}
+
+func (f *fakePlatformOps) Versions(context.Context, string) ([]paramport.PlatformVersion, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.versions, nil
+}
+
+func (f *fakePlatformOps) Publish(_ context.Context, _ string, versionID int64, _ string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.publishID = versionID
+	return nil
+}
+
+func (f *fakePlatformOps) Rollback(_ context.Context, _ string, versionID int64, _ string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.rollbackID = versionID
+	return nil
+}
+
+func (f *fakePlatformOps) UpdateEvalState(_ context.Context, _ string, versionSeq int64, state, _ string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.lastState, f.lastStateSeq = state, versionSeq
+	return nil
+}
+
+// fakeResourceRollback 记录 GateTarget，供 rollback_resource 分派断言；err 非 nil 时返回。
+type fakeResourceRollback struct {
+	calls []evaldomain.GateTarget
+	err   error
+}
+
+func (f *fakeResourceRollback) Rollback(_ context.Context, _ string, target evaldomain.GateTarget, _, _, _ string) error {
+	f.calls = append(f.calls, target)
+	return f.err
+}
+
+// R28 auto 拒绝不变量：Arguments auto=true → 类型化 sentinel + l3_platform:auto_refused
+// 计数；guard 在 paramSvc 任何调用之前（paramSvc 存在时 Rollback 也不得发生）。
+func TestPlatformRollbackAutoRefused(t *testing.T) {
+	var rec gateActionRecorder
+	stub := &fakePlatformOps{}
+	e := &approvalActionExecutor{paramSvc: stub, metrics: &rec}
+	_, err := executePlatformRollback(context.Background(), e, port.ApprovalActionRequest{
+		DecidedBy: "admin-1",
+		Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2), "auto": true},
+	})
+	require.ErrorIs(t, err, evalport.ErrAutoRollbackForbidden)
+	require.Equal(t, int64(0), stub.rollbackID, "auto rollback must not reach paramSvc")
+	require.Equal(t, []string{constants.GateLayerL3Platform + ":" + constants.GateActionAutoRefused}, rec.actions)
+}
+
+func TestPlatformRollbackHappy(t *testing.T) {
+	stub := &fakePlatformOps{}
+	e := &approvalActionExecutor{paramSvc: stub}
+	out, err := executePlatformRollback(context.Background(), e, port.ApprovalActionRequest{
+		DecidedBy: "admin-1", Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2)},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "rolled_back", out["status"])
+	require.Equal(t, int64(2), stub.rollbackID)
+}
+
+func TestPlatformRollbackMissingArgsFailsClosed(t *testing.T) {
+	e := &approvalActionExecutor{paramSvc: &fakePlatformOps{}}
+	_, err := executePlatformRollback(context.Background(), e, port.ApprovalActionRequest{
+		Arguments: map[string]any{"group_key": "", "version_id": float64(0)},
+	})
+	notExecutedError(t, err)
+}
+
+// publish 前置哨兵断言：eval_state != sentinel_passed → notExecuted（fail-closed），Publish 未发生。
+func TestPlatformPublishRequiresSentinelPassed(t *testing.T) {
+	stub := &fakePlatformOps{versions: []paramport.PlatformVersion{
+		{ID: 2, VersionSeq: 3, Status: "draft", EvalState: "unknown"},
+	}}
+	e := &approvalActionExecutor{paramSvc: stub}
+	_, err := executePlatformPublishGated(context.Background(), e, port.ApprovalActionRequest{
+		DecidedBy: "admin-1", Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2)},
+	})
+	notExecutedError(t, err)
+	require.Equal(t, int64(0), stub.publishID)
+}
+
+// publish happy：id→seq 桥（Publish 收行 PK id=2，UpdateEvalState 收 seq=3）+ 发布后回写 sentinel_passed。
+func TestPlatformPublishHappy(t *testing.T) {
+	stub := &fakePlatformOps{versions: []paramport.PlatformVersion{
+		{ID: 2, VersionSeq: 3, Status: "draft", EvalState: constants.PlatformEvalStateSentinelPassed},
+	}}
+	e := &approvalActionExecutor{paramSvc: stub}
+	out, err := executePlatformPublishGated(context.Background(), e, port.ApprovalActionRequest{
+		DecidedBy: "admin-1", Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2)},
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stub.publishID)
+	require.Equal(t, constants.PlatformEvalStateSentinelPassed, stub.lastState)
+	require.Equal(t, int64(3), stub.lastStateSeq)
+	require.Equal(t, 3, out["version_seq"]) // VersionSeq 为 int；分支返回 int
+}
+
+func TestResourceRollbackDispatchToExecutor(t *testing.T) {
+	stub := &fakeResourceRollback{}
+	e := &approvalActionExecutor{resourceRollback: stub}
+	out, err := executeResourceRollback(context.Background(), e, port.ApprovalActionRequest{
+		TenantID: "t1", DecidedBy: "admin-1",
+		Arguments: map[string]any{"resource_kind": "agent", "resource_id": "agent-1", "target_revision_id": "rev-9"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "rolled_back", out["status"])
+	require.Len(t, stub.calls, 1)
+	require.Equal(t, evaldomain.ScopeResource, stub.calls[0].Scope)
+	require.Equal(t, "agent", stub.calls[0].Kind)
+	require.Equal(t, "agent-1", stub.calls[0].ResourceID)
+	require.Equal(t, "rev-9", stub.calls[0].RevisionID)
+}
+
+// rollback_resource 失败（含 Task 3 ErrRollbackUnsupported）单事务无副作用 → notExecuted 可重试。
+func TestResourceRollbackFailureNotExecuted(t *testing.T) {
+	e := &approvalActionExecutor{resourceRollback: &fakeResourceRollback{err: evalport.ErrRollbackUnsupported}}
+	_, err := executeResourceRollback(context.Background(), e, port.ApprovalActionRequest{
+		TenantID: "t1", DecidedBy: "admin-1",
+		Arguments: map[string]any{"resource_kind": "mcp", "resource_id": "srv-1", "target_revision_id": "rev-9"},
+	})
+	notExecutedError(t, err)
+}
+
+func TestPlatformBranchesFailClosedWhenUnconfigured(t *testing.T) {
+	e := &approvalActionExecutor{}
+	_, err := executePlatformRollback(context.Background(), e, port.ApprovalActionRequest{Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2)}})
+	notExecutedError(t, err)
+	_, err = executePlatformPublishGated(context.Background(), e, port.ApprovalActionRequest{Arguments: map[string]any{"group_key": "evaluation", "version_id": float64(2)}})
+	notExecutedError(t, err)
+	_, err = executeResourceRollback(context.Background(), e, port.ApprovalActionRequest{TenantID: "t1", Arguments: map[string]any{}})
+	notExecutedError(t, err)
 }

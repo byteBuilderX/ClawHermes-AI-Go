@@ -10,6 +10,7 @@ import (
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	pipeline "github.com/byteBuilderX/stratum/internal/memory/infrastructure/pipeline"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 )
@@ -46,6 +47,14 @@ func (s *LLMSuperseder) WithParamResolver(r memport.PlatformParamResolver) *LLMS
 	return s
 }
 
+// CheckModelConfig 预检 memory.supersede_model 是否可解析（周期 worker RunOnce
+// 顶部调用，防「模型缺失 → 空跑一轮假 success」）。不查目录；disabled 判定由
+// 探针经 enabled 目录比对负责。错误为 *modelconfig.Err。
+func (s *LLMSuperseder) CheckModelConfig(ctx context.Context) error {
+	_, err := modelconfig.ResolveChatModel(ctx, s.paramResolver, modelconfig.KeySupersedeModel)
+	return err
+}
+
 func (s *LLMSuperseder) JudgeSupersede(ctx context.Context, oldFact, newFact string) (*memport.SupersedeJudgment, error) {
 	client := s.client
 	if s.resolver != nil {
@@ -58,7 +67,13 @@ func (s *LLMSuperseder) JudgeSupersede(ctx context.Context, oldFact, newFact str
 	if client == nil {
 		return nil, fmt.Errorf("llm supersede: client unavailable")
 	}
-	model := resolvePlatformString(ctx, s.paramResolver, "memory.supersede_model", "")
+	// 判定模型为必需平台参数（fail-closed）：未显式配置或解析失败即返回
+	// *modelconfig.Err，禁止空模型回落 llmgateway 默认。
+	model, err := modelconfig.ResolveChatModel(ctx, s.paramResolver, modelconfig.KeySupersedeModel)
+	if err != nil {
+		logModelConfigError(s.logger, "supersede", err)
+		return nil, err
+	}
 	temperature := resolvePlatformFloat(ctx, s.paramResolver, "memory.supersede_temperature", 0)
 	promptTmpl := resolvePlatformString(ctx, s.paramResolver, "memory.supersede_prompt", "")
 	if strings.TrimSpace(promptTmpl) == "" {
@@ -66,7 +81,6 @@ func (s *LLMSuperseder) JudgeSupersede(ctx context.Context, oldFact, newFact str
 		return nil, fmt.Errorf("memory supersede: memory.supersede_prompt not configured (fail-closed)")
 	}
 	prompt := fmt.Sprintf(promptTmpl, oldFact, newFact)
-	// 判定模型为空：交由 llmgateway client 默认解析（pre-refactor 行为）。
 	judgment, err := pipeline.CompleteStructured(ctx, client, llmdomain.NewExtractRequest(
 		model, "", prompt, temperature, constants.MemorySupersedeJudgeMaxTokens,
 	), parseSupersedeJudgment,

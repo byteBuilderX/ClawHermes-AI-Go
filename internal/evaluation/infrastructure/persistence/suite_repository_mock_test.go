@@ -38,7 +38,7 @@ func TestPgSuiteRepository_CreateSuite_success(t *testing.T) {
 		WithArgs("rev-1", "suite-1", "parent-1", 2, "draft", "prompt", "").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO eval_cases").
-		WithArgs("case-1", "rev-1", "c1", `{"q":"hi"}`, `"ok"`, "exact", true, `{}`).
+		WithArgs("case-1", "rev-1", "c1", `{"q":"hi"}`, `"ok"`, "exact", true, `{}`, `{}`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
@@ -91,11 +91,11 @@ func TestPgSuiteRepository_GetDraftRevision_found(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "suite_id", "parent_id", "version_no", "status", "resource_kind", "created_by",
 		}).AddRow("rev-1", "suite-1", "", 3, "draft", "prompt", ""))
-	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, evaluator_config").
+	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, session, evaluator_config").
 		WithArgs("rev-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "evaluator_config",
-		}).AddRow("case-1", "c1", []byte(`{"q":1}`), []byte(`"ok"`), "contains", true, []byte(nil)))
+			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "session", "evaluator_config",
+		}).AddRow("case-1", "c1", []byte(`{"q":1}`), []byte(`"ok"`), "contains", true, []byte(`{}`), []byte(nil)))
 	mock.ExpectCommit()
 
 	revision, found, err := repo.GetDraftRevision(context.Background(), "t1", "suite-1")
@@ -134,11 +134,11 @@ func TestPgSuiteRepository_GetRevision_invalidCaseJSON(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "suite_id", "parent_id", "version_no", "status", "resource_kind", "created_by",
 		}).AddRow("rev-1", "suite-1", "", 3, "published", "prompt", ""))
-	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, evaluator_config").
+	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, session, evaluator_config").
 		WithArgs("rev-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "evaluator_config",
-		}).AddRow("case-1", "c1", []byte(`{bad`), []byte(`"ok"`), "contains", true, []byte(nil)))
+			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "session", "evaluator_config",
+		}).AddRow("case-1", "c1", []byte(`{bad`), []byte(`"ok"`), "contains", true, []byte(`{}`), []byte(nil)))
 	mock.ExpectCommit()
 
 	// loadSuiteRevision ignores per-case decode errors; revision is still returned.
@@ -171,28 +171,44 @@ func TestPgSuiteRepository_PublishRevision_success(t *testing.T) {
 	repo := &PgSuiteRepository{pool: mock}
 
 	expectTenantTx(mock)
+	// S1-1：事务首行按 suite 加 advisory 锁串行化并发 publish。
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WithArgs("suite-1").
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectExec("UPDATE eval_suite_revisions").
 		WithArgs("rev-1", "suite-1", 5).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE eval_suites SET active_revision_id").
-		WithArgs("suite-1", "rev-1").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// 发布后 reload 刚置为 published 的 revision 及其 cases，用于返回 + 播种继承草稿。
 	mock.ExpectQuery("SELECT id, suite_id, COALESCE\\(parent_id").
 		WithArgs("rev-1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "suite_id", "parent_id", "version_no", "status", "resource_kind", "created_by",
 		}).AddRow("rev-1", "suite-1", "", 5, "published", "prompt", ""))
-	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, evaluator_config").
+	mock.ExpectQuery("SELECT id, name, input, expected_output, assertion_mode, enabled, session, evaluator_config").
 		WithArgs("rev-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "evaluator_config",
-		}))
+			"id", "name", "input", "expected_output", "assertion_mode", "enabled", "session", "evaluator_config",
+		}).AddRow("case-1", "c1", []byte(`{"q":1}`), []byte(`"ok"`), "contains", true, []byte(`{}`), []byte(`{}`)))
+	// 自动开启继承草稿：id 随机（新 revision），kind/created_by 继承自刚发布 revision。
+	mock.ExpectExec("INSERT INTO eval_suite_revisions").
+		WithArgs(pgxmock.AnyArg(), "suite-1", "rev-1", "draft", "prompt", "").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// 继承草稿把 published revision 的全部 case 以全新 uuid 拷贝。手写规则 case 的
+	// evaluator_config 存的是 '{}'；读回时 ApplyConfig 的 bare-JudgeSpec 兜底把 '{}'
+	// 解析成空 JudgeSpec，重写后即为 {'judge_spec':{}}（内容无差别的既有行为）。
+	mock.ExpectExec("INSERT INTO eval_cases").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "c1", `{"q":1}`, `"ok"`, "contains", true, `{}`, `{"judge_spec":{}}`).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("UPDATE eval_suites SET active_revision_id").
+		WithArgs("suite-1", "rev-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
 	revision, err := repo.PublishRevision(context.Background(), "t1", "suite-1", "rev-1", 5)
 	require.NoError(t, err)
 	require.Equal(t, "rev-1", revision.ID)
 	require.Equal(t, domain.SuiteRevisionPublished, revision.Status)
+	require.Len(t, revision.Cases, 1)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -201,6 +217,9 @@ func TestPgSuiteRepository_PublishRevision_draftMissing(t *testing.T) {
 	repo := &PgSuiteRepository{pool: mock}
 
 	expectTenantTx(mock)
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WithArgs("suite-1").
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectExec("UPDATE eval_suite_revisions").
 		WithArgs("rev-1", "suite-1", 5).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))

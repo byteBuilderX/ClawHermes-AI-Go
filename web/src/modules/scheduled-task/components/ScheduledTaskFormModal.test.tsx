@@ -52,7 +52,7 @@ describe('ScheduledTaskFormModal', () => {
   beforeEach(() => {
     vi.mocked(workflowApi.listWorkflows).mockResolvedValue({ workflows: [], total: 0, page: 1, page_size: 50 });
     vi.mocked(workflowApi.listWorkflowVersions).mockResolvedValue({
-      versions: [{ id: 'ver-1', definition_id: 'wf-1', version: 2, name: '稳定版', description: '', created_at: '2026-07-24T00:00:00Z' }],
+      versions: [{ id: 'ver-1', definition_id: 'wf-1', version: 2, name: '稳定版', description: '', created_by: '', created_by_name: '', created_at: '2026-07-24T00:00:00Z' }],
       total: 1, page: 1, page_size: 50,
     });
   });

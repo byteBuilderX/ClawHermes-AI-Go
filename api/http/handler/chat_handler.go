@@ -227,6 +227,10 @@ func messageResponse(m *agent.ChatMessage) gin.H {
 	if steps == nil {
 		steps = []byte("[]")
 	}
+	sources := m.Sources
+	if sources == nil {
+		sources = []domain.RAGSearchSource{}
+	}
 	return gin.H{
 		"id":              m.ID,
 		"conversation_id": m.ConversationID,
@@ -234,6 +238,7 @@ func messageResponse(m *agent.ChatMessage) gin.H {
 		"content":         m.Content,
 		"steps":           steps,
 		"artifacts":       executionArtifactsResponse(m.Artifacts),
+		"sources":         sources,
 		"is_error":        m.IsError,
 		"created_at":      m.CreatedAt,
 	}

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain"
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/constants"
 )
 
 const (
@@ -119,4 +121,79 @@ func (s *QueryService) Timeline(ctx context.Context, tenantID string, filter por
 		p.Items = []domain.TimelineEvent{}
 	}
 	return p, mapCenterError(e)
+}
+
+func normalizeMonitorFilter(filter port.MonitorFilter) (port.MonitorFilter, error) {
+	if err := validateMonitorFilter(filter); err != nil {
+		return filter, err
+	}
+	if filter.Limit < 0 {
+		return filter, fmt.Errorf("%w: negative limit", domain.ErrInvalidCenterQuery)
+	}
+	filter = defaultMonitorWindow(filter)
+	if filter.Limit == 0 {
+		filter.Limit = constants.EvalMonitorResourceLimitDefault
+	}
+	if filter.Limit > constants.EvalMonitorResourceLimitMax {
+		filter.Limit = constants.EvalMonitorResourceLimitMax
+	}
+	return filter, nil
+}
+
+// validateMonitorFilter 校验 kind 白名单、resource_id 依赖与窗口顺序。
+func validateMonitorFilter(filter port.MonitorFilter) error {
+	if filter.ResourceKind != "" && domain.ResourceKind(filter.ResourceKind).Validate() != nil {
+		return domain.ErrInvalidCenterQuery
+	}
+	if filter.ResourceKind == "" && strings.TrimSpace(filter.ResourceID) != "" {
+		return fmt.Errorf("%w: resource_id requires resource_kind", domain.ErrInvalidCenterQuery)
+	}
+	if filter.From != nil && filter.To != nil && filter.To.Before(*filter.From) {
+		return fmt.Errorf("%w: from after to", domain.ErrInvalidCenterQuery)
+	}
+	return nil
+}
+
+// defaultMonitorWindow 窗口缺省为近 EvalMonitorWindowDays 天（now-窗口, now]。
+func defaultMonitorWindow(filter port.MonitorFilter) port.MonitorFilter {
+	if filter.From == nil {
+		from := time.Now().UTC().Add(-time.Duration(constants.EvalMonitorWindowDays) * 24 * time.Hour)
+		filter.From = &from
+	}
+	if filter.To == nil {
+		to := time.Now().UTC()
+		filter.To = &to
+	}
+	return filter
+}
+
+func (s *QueryService) MonitorResources(ctx context.Context, tenantID string, filter port.MonitorFilter) (domain.MonitorResourcesPage, error) {
+	f, e := normalizeMonitorFilter(filter)
+	if e != nil {
+		return domain.MonitorResourcesPage{}, e
+	}
+	p, e := s.repo.MonitorResources(ctx, tenantID, f)
+	if p.Items == nil {
+		p.Items = []domain.MonitorResourceSummary{}
+	}
+	p.Window = domain.MonitorWindow{From: *f.From, To: *f.To}
+	return p, mapCenterError(e)
+}
+
+func (s *QueryService) MonitorTrend(ctx context.Context, tenantID string, filter port.MonitorFilter) (domain.MonitorTrendSeries, error) {
+	if strings.TrimSpace(filter.ResourceKind) == "" || strings.TrimSpace(filter.ResourceID) == "" {
+		return domain.MonitorTrendSeries{}, fmt.Errorf("%w: resource required", domain.ErrInvalidCenterQuery)
+	}
+	f, e := normalizeMonitorFilter(filter)
+	if e != nil {
+		return domain.MonitorTrendSeries{}, e
+	}
+	trend, e := s.repo.MonitorTrend(ctx, tenantID, f)
+	if trend.Series == nil {
+		trend.Series = []domain.MonitorTrendPoint{}
+	}
+	if trend.Runs == nil {
+		trend.Runs = []domain.RunProcessPoint{}
+	}
+	return trend, mapCenterError(e)
 }

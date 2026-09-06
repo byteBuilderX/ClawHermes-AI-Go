@@ -39,13 +39,19 @@ const (
 	TriggerJudgeRuleConflict     ReviewTriggerReason = "judge_rule_conflict"
 	TriggerNeedsReview           ReviewTriggerReason = "needs_review"
 	TriggerProcessOutputConflict ReviewTriggerReason = "process_output_conflict"
+	// TriggerBehaviorAnomaly 行为判异入池：Signals.Behavior 含 abandonment/escalation 且
+	// Verdict=flag（spec §3.2-③）。trigger_reason 枚举 DDL P1 T2 已含，P2 零 DDL。
+	TriggerBehaviorAnomaly ReviewTriggerReason = "behavior_anomaly"
+	// TriggerTrajectoryFailed 会话演化轨迹判负入池（阶段 B §4.5 盲点：容器级轨迹
+	// 负例——整段会话停滞/漂移、逐轮单看无独立错误的样本——必须强制人工复核）。
+	TriggerTrajectoryFailed ReviewTriggerReason = "trajectory_failed"
 )
 
 // Valid 校验入池原因枚举。
 func (r ReviewTriggerReason) Valid() bool {
 	switch r {
 	case TriggerLowConfidence, TriggerDimensionSplit, TriggerJudgeRuleConflict, TriggerNeedsReview,
-		TriggerProcessOutputConflict:
+		TriggerProcessOutputConflict, TriggerBehaviorAnomaly, TriggerTrajectoryFailed:
 		return true
 	default:
 		return false
@@ -64,13 +70,15 @@ const (
 // RiskLevel 把入池原因映射为评审优先级。硬编码规则，与 persistence 的 reviewRiskOrderSQL
 // 保持镜像（两端注释互指，修改必须同步）：
 //   - high：judge_rule_conflict（规则护栏命中 = 安全类）、process_output_conflict（副作用/写操作越界）；
-//   - medium：low_confidence、dimension_split、needs_review；
+//   - medium：low_confidence、dimension_split、needs_review、behavior_anomaly、trajectory_failed
+//     （会话整段停滞/漂移需人工复核归因）；
 //   - low：其余（未来新增触发默认低，人工可随时介入）。
 func (r ReviewTriggerReason) RiskLevel() ReviewRiskLevel {
 	switch r {
 	case TriggerJudgeRuleConflict, TriggerProcessOutputConflict:
 		return ReviewRiskHigh
-	case TriggerLowConfidence, TriggerDimensionSplit, TriggerNeedsReview:
+	case TriggerLowConfidence, TriggerDimensionSplit, TriggerNeedsReview, TriggerBehaviorAnomaly,
+		TriggerTrajectoryFailed:
 		return ReviewRiskMedium
 	default:
 		return ReviewRiskLow
@@ -154,17 +162,26 @@ type AttributionEntry struct {
 }
 
 // TriggersForObservation 计算观测应入池的触发原因（空 = 不进池）。纯函数，硬编码规则。
-// 规则（spec §6.6）：
+// 规则（spec §6.6 + §3.2-③）：
 //  1. low_confidence：任一 judge 维度 Confidence < cfg.LowConfidenceThreshold，
 //     或 Confidence 落在边界区间 [ConfidenceBoundaryLow, ConfidenceBoundaryHigh]，
 //     或打分理由含糊（hasVagueReason：为空/过短 <VagueReasonMinRunes/含不确定性措辞）；
 //  2. dimension_split：存在 Score >= JudgePassThreshold 且存在 Score < JudgePassThreshold；
-//  3. judge_rule_conflict：规则命中（Signals.Rule 非空）+ Verdict == block + 全部维度 pass。
+//  3. judge_rule_conflict：规则命中（Signals.Rule 非空）+ Verdict == block + 全部维度 pass；
+//  4. behavior_anomaly：Signals.Behavior 含 abandonment/escalation 且 Verdict == flag
+//     （无 judge 的行为判异也入池；但无 judge 的 rule-block-only 观测 Verdict=block，
+//     不满足 flag 守卫，仍不进池，勿破坏现状）。
 func TriggersForObservation(obs *EvalObservation, cfg ReviewConfig) []ReviewTriggerReason {
-	if obs == nil || len(obs.Signals.Judge) == 0 {
+	if obs == nil {
 		return nil
 	}
 	var triggers []ReviewTriggerReason
+	if isBehaviorAnomaly(obs) {
+		triggers = append(triggers, TriggerBehaviorAnomaly)
+	}
+	if len(obs.Signals.Judge) == 0 {
+		return triggers
+	}
 	if hasLowConfidence(obs.Signals.Judge, cfg.LowConfidenceThreshold) {
 		triggers = append(triggers, TriggerLowConfidence)
 	}
@@ -176,6 +193,15 @@ func TriggersForObservation(obs *EvalObservation, cfg ReviewConfig) []ReviewTrig
 		triggers = append(triggers, TriggerJudgeRuleConflict)
 	}
 	return triggers
+}
+
+// isBehaviorAnomaly 判定行为判异：Signals.Behavior 含 abandonment/escalation 且 Verdict == flag
+// （spec §3.2-③）。复合布尔独立成小函数，保持 TriggersForObservation 圈复杂度 ≤10。
+func isBehaviorAnomaly(obs *EvalObservation) bool {
+	if obs.Verdict != VerdictFlag {
+		return false
+	}
+	return obs.Signals.Behavior.Abandonment || obs.Signals.Behavior.Escalation
 }
 
 // hasLowConfidence 返回任一 judge 维度满足低置信：Confidence < threshold、落在边界区间，

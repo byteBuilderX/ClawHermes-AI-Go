@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -14,11 +16,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// PublishGateFunc 是 Publish 前置发布闸（nil = 未装配，保持裸发布；Task 5 装配编排器，
+// 行为默认不变——gate.enabled=false 返回 passthrough）。
+// decision ∈ {"passthrough","approval_pending","blocked","refused_not_wired"}
+type PublishGateFunc func(ctx context.Context, groupKey string, versionID int64, actor string) (decision, message, runID string, err error)
+
 // ParameterHandler exposes the unified parameter registry under /admin/parameters.
 type ParameterHandler struct {
-	svc    *paramapp.Service
-	logger *zap.Logger
+	svc         *paramapp.Service
+	logger      *zap.Logger
+	publishGate PublishGateFunc
 }
+
+func (h *ParameterHandler) SetPublishGate(g PublishGateFunc) { h.publishGate = g }
 
 func NewParameterHandler(svc *paramapp.Service, logger *zap.Logger) *ParameterHandler {
 	return &ParameterHandler{svc: svc, logger: logger}
@@ -126,12 +136,35 @@ func (h *ParameterHandler) CreateDraft(c *gin.Context) {
 
 // Publish POST /admin/parameters/versions/:groupKey/:versionID/publish —
 // promotes a draft to published and moves the production/latest labels.
+// 装配发布闸后先询问编排器：非 passthrough 一律不触 h.svc.Publish（fail-closed，
+// 不静默直发）；nil 闸（默认）= 未装配 → 维持现状裸发布。
 func (h *ParameterHandler) Publish(c *gin.Context) {
 	versionID, ok := parseVersionID(c)
 	if !ok {
 		return
 	}
-	if err := h.svc.Publish(c.Request.Context(), c.Param("groupKey"), versionID, c.GetString(middleware.ContextKeySub)); err != nil {
+	groupKey := c.Param("groupKey")
+	actor := c.GetString(middleware.ContextKeySub)
+	if h.publishGate != nil {
+		decision, message, runID, err := h.publishGate(c.Request.Context(), groupKey, versionID, actor)
+		if err != nil {
+			_ = c.Error(err) // 编排器内部错误 → 统一 500；不直发
+			return
+		}
+		switch decision {
+		case "passthrough": // gate 关闭：落回裸发布（默认语义，行为与现状一致）
+		case "approval_pending":
+			c.JSON(http.StatusAccepted, gin.H{"status": "sentinel_pending", "run_id": runID, "message": message})
+			return
+		case "blocked", "refused_not_wired":
+			c.JSON(http.StatusConflict, gin.H{"error": message})
+			return
+		default:
+			_ = c.Error(fmt.Errorf("unknown publish gate decision %q", decision))
+			return
+		}
+	}
+	if err := h.svc.Publish(c.Request.Context(), groupKey, versionID, actor); err != nil {
 		h.renderVersionError(c, err)
 		return
 	}

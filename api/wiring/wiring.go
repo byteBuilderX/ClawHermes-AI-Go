@@ -46,6 +46,7 @@ type Container struct {
 	Scheduler            *Scheduler
 	Collab               *Collab
 	Audit                *Audit
+	PublishGate          PublishGateFunc
 	ReadinessCheck       func(context.Context) map[string]error
 	RevisionObjectStore  pkgobjectstore.Store
 	revisionObjectClient *minio.Client
@@ -87,6 +88,8 @@ func BuildContainer(ctx context.Context, cfg *config.Config, logger *zap.Logger)
 		{"scheduler", c.buildScheduler},
 		{"collab", c.buildCollab},
 		{"evaluation", c.buildEvaluation},
+		{"publish-gate", c.buildPublishGate},
+		{"platform-verify-worker", c.buildPlatformVerifyWorker},
 	}
 
 	for _, step := range steps {

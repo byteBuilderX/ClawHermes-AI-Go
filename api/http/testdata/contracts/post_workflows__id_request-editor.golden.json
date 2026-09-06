@@ -1,0 +1,11 @@
+[
+  {
+    "name": "authenticated-success",
+    "method": "POST",
+    "path": "/workflows/contract-id/request-editor",
+    "want_status": 500,
+    "want_body": {
+      "error": "internal server error"
+    }
+  }
+]

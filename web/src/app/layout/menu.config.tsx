@@ -81,6 +81,7 @@ export const buildMenuItems = (user: User | null | undefined): MenuItem[] => {
       label: '评测',
       children: [
         { key: '/evaluations', icon: <ExperimentOutlined />, label: '评测与进化' },
+        { key: '/evaluations/suites', icon: <AppstoreOutlined />, label: '评测集' },
       ],
     },
     {

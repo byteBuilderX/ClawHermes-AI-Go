@@ -193,6 +193,297 @@ func TestServiceGetRunReturnsPersistedRun(t *testing.T) {
 	}
 }
 
+// ——— Session script cases (stage B §5.4) ———
+
+// TestServiceRunCaseSessionAggregatesTurnsAndProjectsLast 覆盖会话 case 的聚合语义：
+// Turns 逐轮证据全量保留、末轮输出投影为 Actual/TraceID、token/duration/cost 聚合
+// 为逐轮之和、适配器收到租户与剧本透传。
+func TestServiceRunCaseSessionAggregatesTurnsAndProjectsLast(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}}
+	svc := NewService(adapter, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1", RequestedBy: "user-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-1", Session: &domain.EvalSessionScript{Goal: "解答用户问题",
+				Turns: []domain.SessionTurn{{User: "开场问题"}, {User: "追问细节"}}},
+				AssertionMode: domain.AssertionExact, ExpectedOutput: "追问细节", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(run.Results) != 1 {
+		t.Fatalf("expected 1 case result, got %d", len(run.Results))
+	}
+	got := run.Results[0]
+	if !got.Passed {
+		t.Fatalf("expected session run to pass, got result: %+v", got)
+	}
+	if len(got.Turns) != 2 {
+		t.Fatalf("expected 2 turn evidences, got %d", len(got.Turns))
+	}
+	if got.Turns[0].Index != 0 || got.Turns[1].Index != 1 {
+		t.Fatalf("turn indexes not sequential: %+v", got.Turns)
+	}
+	// 末轮投影：Actual/TraceID 取末轮；逐轮 user 消息回显为 Output 透传至证据。
+	if got.Actual != "追问细节" || got.TraceID != "trace-session" {
+		t.Fatalf("last-turn projection wrong: actual=%v trace=%q", got.Actual, got.TraceID)
+	}
+	// 聚合：token/duration 为逐轮之和（cost 按"分"断言避免浮点尾差）。
+	if got.Tokens != 30 || got.DurationMs != 60 {
+		t.Fatalf("aggregated tokens/duration wrong: tokens=%d duration=%d", got.Tokens, got.DurationMs)
+	}
+	if cents := int(got.CostUSD*100 + 0.5); cents != 3 {
+		t.Fatalf("aggregated cost wrong: %v", got.CostUSD)
+	}
+	if adapter.runTenant != "tenant-1" || len(adapter.lastScript.Turns) != 2 {
+		t.Fatalf("adapter not driven with tenant/script: tenant=%q turns=%d",
+			adapter.runTenant, len(adapter.lastScript.Turns))
+	}
+}
+
+// TestServiceRunCaseSessionForSkillResource 覆盖 skill 资源的会话剧本 case 跑通：
+// runCaseSession 按 IsSession() 分派（kind 无关），skill ResourceRef 与逐轮剧本透传
+// 给 SessionRunner，末轮投影/聚合语义与 agent 资源会话一致。
+func TestServiceRunCaseSessionForSkillResource(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}}
+	svc := NewService(adapter, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1", RequestedBy: "user-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindSkill, ResourceID: "skill-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-skill-1", Session: &domain.EvalSessionScript{Goal: "skill 会话目标",
+				Turns: []domain.SessionTurn{{User: "skill 开场"}, {User: "skill 追问"}}},
+				AssertionMode: domain.AssertionExact, ExpectedOutput: "skill 追问", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(run.Results) != 1 {
+		t.Fatalf("expected 1 case result, got %d", len(run.Results))
+	}
+	got := run.Results[0]
+	if !got.Passed {
+		t.Fatalf("expected skill session run to pass, got result: %+v", got)
+	}
+	if len(got.Turns) != 2 {
+		t.Fatalf("expected 2 turn evidences, got %d", len(got.Turns))
+	}
+	// 末轮投影与资源 kind 无关：Actual 取末轮 Output。
+	if got.Actual != "skill 追问" || got.TraceID != "trace-session" {
+		t.Fatalf("last-turn projection wrong: actual=%v trace=%q", got.Actual, got.TraceID)
+	}
+	// 聚合：token/duration 为逐轮之和（cost 按"分"断言避免浮点尾差）。
+	if got.Tokens != 30 || got.DurationMs != 60 {
+		t.Fatalf("aggregated tokens/duration wrong: tokens=%d duration=%d", got.Tokens, got.DurationMs)
+	}
+	if adapter.runTenant != "tenant-1" || len(adapter.lastScript.Turns) != 2 {
+		t.Fatalf("adapter not driven with skill tenant/script: tenant=%q turns=%d",
+			adapter.runTenant, len(adapter.lastScript.Turns))
+	}
+}
+
+// TestServiceRunCaseSessionFailsClosedWhenAdapterLacksSessionRunner 覆盖 fail-close：
+// adapter 仅实现单轮 ResourceAdapter（不实现 SessionRunner）时，会话 case 报错并记
+// 执行失败，绝不静默退化为单轮执行。
+func TestServiceRunCaseSessionFailsClosedWhenAdapterLacksSessionRunner(t *testing.T) {
+	svc := NewService(&fakeAdapter{}, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-1", Session: &domain.EvalSessionScript{Goal: "g",
+				Turns: []domain.SessionTurn{{User: "开场"}}},
+				AssertionMode: domain.AssertionExact, ExpectedOutput: "x", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := run.Results[0]
+	if got.Passed {
+		t.Fatalf("session case must fail closed on non-SessionRunner adapter, got: %+v", got)
+	}
+	if got.FailureReason != "execution" || !strings.Contains(got.Error, "session evaluation not supported") {
+		t.Fatalf("unexpected failure attribution: reason=%q err=%q", got.FailureReason, got.Error)
+	}
+}
+
+// TestServiceRunCaseSessionKeepsPartialEvidenceWhenMidRunFails 覆盖逐轮执行中途失败：
+// 已产出轮次的证据保留在 result.Turns（partial evidence），失败记为 execution 归因。
+func TestServiceRunCaseSessionKeepsPartialEvidenceWhenMidRunFails(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}, sessionErr: errFakeSession}
+	svc := NewService(adapter, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-1", Session: &domain.EvalSessionScript{Goal: "g",
+				Turns: []domain.SessionTurn{{User: "第一轮"}, {User: "第二轮"}, {User: "第三轮"}}},
+				AssertionMode: domain.AssertionExact, ExpectedOutput: "第三轮", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := run.Results[0]
+	if got.Passed {
+		t.Fatalf("mid-run session failure must not pass, got: %+v", got)
+	}
+	if got.FailureReason != "execution" {
+		t.Fatalf("unexpected failure reason: %q", got.FailureReason)
+	}
+	// 前两轮已产出 → 部分证据保留（第三轮失败点产出即返回）。
+	if len(got.Turns) != 2 {
+		t.Fatalf("expected partial evidence (2 turns) preserved, got %d", len(got.Turns))
+	}
+	// partial evidence 消耗同样聚合进 case/run 级成本（失败不吞真实消耗）：
+	// fakeSessionAdapter 前两轮 tokens=10+20、cost=0.01+0.02、duration=20+40。
+	if got.Tokens != 30 {
+		t.Fatalf("partial tokens not aggregated: got %d want 30", got.Tokens)
+	}
+	if got.DurationMs != 60 {
+		t.Fatalf("partial duration not aggregated: got %d want 60", got.DurationMs)
+	}
+	if cents := int(got.CostUSD*100 + 0.5); cents != 3 {
+		t.Fatalf("partial cost not aggregated: got %v want 0.03", got.CostUSD)
+	}
+}
+
+// TestServiceRunCaseSessionRejectsInvalidScriptBeforeSession 覆盖剧本结构 preflight：
+// 非法剧本（零轮/空 user）在驱动适配器开受控会话前即被拒绝，RunSession 不被调用，
+// 失败归因 execution（与其它「会话无法执行」路径一致）。
+func TestServiceRunCaseSessionRejectsInvalidScriptBeforeSession(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}}
+	svc := NewService(adapter, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-1", Session: &domain.EvalSessionScript{Goal: "g"},
+				AssertionMode: domain.AssertionExact, ExpectedOutput: "x", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := run.Results[0]
+	if got.Passed {
+		t.Fatalf("invalid script must not pass, got: %+v", got)
+	}
+	if got.FailureReason != "execution" || !strings.Contains(got.Error, "at least one turn required") {
+		t.Fatalf("unexpected failure attribution: reason=%q err=%q", got.FailureReason, got.Error)
+	}
+	// preflight 在 RunSession 前拦截：适配器未被驱动（runTenant 未被赋值）。
+	if adapter.runTenant != "" {
+		t.Fatalf("RunSession must not be called for invalid script, runTenant=%q", adapter.runTenant)
+	}
+}
+
+// TestServiceRunCaseSessionTrajectoryStalledFails 覆盖演化轨迹判据（阶段 B §4.2）：
+// 规则会话连续两轮输出重复、末轮未达终态 → 判 stalled，Passed=false 且失败归因
+// 优先容器级 "trajectory:stalled"（比单轮 assert:contains 更能解释整段没走对）。
+func TestServiceRunCaseSessionTrajectoryStalledFails(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}}
+	svc := NewService(adapter, &fakeRunRepo{}, nil, nil)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-stall", Session: &domain.EvalSessionScript{Goal: "产出目标答案",
+				Turns: []domain.SessionTurn{{User: "同一个回答"}, {User: "同一个回答"}}},
+				AssertionMode: domain.AssertionContains, ExpectedOutput: "目标答案", Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := run.Results[0]
+	if got.Passed {
+		t.Fatalf("stalled session must not pass, got: %+v", got)
+	}
+	if got.Trajectory == nil || got.Trajectory.Kind != domain.TrajectoryStalled {
+		t.Fatalf("Trajectory = %+v, want stalled", got.Trajectory)
+	}
+	if got.FailureReason != "trajectory:stalled" {
+		t.Fatalf("FailureReason = %q, want trajectory:stalled", got.FailureReason)
+	}
+}
+
+// TestServiceRunJudgeSessionSendsTranscriptAndConverges 覆盖 judge 会话调用形态
+// （阶段 B §4.3/§4.2）：LLM judge 收到逐轮 transcript（非空且含 Goal/轮次）；终态
+// 通过后轨迹翻转为 converged（judge 模式纯函数只给 NA/Stalled，收敛由权威终态分支落）。
+func TestServiceRunJudgeSessionSendsTranscriptAndConverges(t *testing.T) {
+	adapter := &fakeSessionAdapter{fakeAdapter: &fakeAdapter{}}
+	repo := &fakeRunRepo{}
+	judge := &fakeLLMJudge{enabled: true, result: domain.AssertionResult{Passed: true, Message: "末轮到达目标"}}
+	svc := NewService(adapter, repo, nil, judge)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "session-judge", Session: &domain.EvalSessionScript{Goal: "完成报销核算",
+				Turns: []domain.SessionTurn{{User: "报销规则"}, {User: "金额核算"}}},
+				AssertionMode: domain.AssertionJudge, Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := run.Results[0]
+	if !got.Passed {
+		t.Fatalf("judge-passed session must pass, got: %+v", got)
+	}
+	if judge.calls != 1 || judge.got.Transcript == "" {
+		t.Fatalf("judge must receive transcript once, calls=%d transcript=%q", judge.calls, judge.got.Transcript)
+	}
+	if !strings.Contains(judge.got.Transcript, "Goal: 完成报销核算") ||
+		!strings.Contains(judge.got.Transcript, "[Turn 0]") || !strings.Contains(judge.got.Transcript, "[Turn 1]") {
+		t.Fatalf("transcript missing goal/turns: %q", judge.got.Transcript)
+	}
+	if got.Trajectory == nil || got.Trajectory.Kind != domain.TrajectoryConverged {
+		t.Fatalf("Trajectory = %+v, want converged after LLM terminal pass", got.Trajectory)
+	}
+}
+
+// TestServiceRunJudgeSessionTranscriptOmitsForSingleTurnCase 覆盖旧单轮 judge case 零
+// 改动：无 Session → JudgeRequest.Transcript 保持空（与既有请求契约逐字节一致）。
+func TestServiceRunJudgeSessionTranscriptOmitsForSingleTurnCase(t *testing.T) {
+	adapter := &fakeAdapter{outputs: map[string]any{"judge-1": "答案"}}
+	repo := &fakeRunRepo{}
+	judge := &fakeLLMJudge{enabled: true, result: domain.AssertionResult{Passed: true, Message: "ok"}}
+	svc := NewService(adapter, repo, nil, judge)
+
+	run, err := svc.Run(snapshotCtx(), RunInput{
+		TenantID: "tenant-1",
+		Resource: domain.ResourceRef{Kind: domain.ResourceKindSkill, ResourceID: "skill-1", RevisionID: "v1"},
+		Suite: domain.EvalSuiteRevision{ID: "sv-1", Cases: []domain.EvalCase{
+			{ID: "judge-1", Input: "问题", AssertionMode: domain.AssertionJudge, Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !run.Results[0].Passed {
+		t.Fatalf("single-turn judge case must pass, got: %+v", run.Results[0])
+	}
+	if judge.got.Transcript != "" {
+		t.Fatalf("single-turn judge request must omit transcript, got %q", judge.got.Transcript)
+	}
+	if run.Results[0].Trajectory != nil {
+		t.Fatalf("single-turn case must keep nil Trajectory (wire-omitted), got %+v", run.Results[0].Trajectory)
+	}
+}
+
 type fakeAdapter struct {
 	outputs  map[string]any
 	errCase  string
@@ -220,6 +511,38 @@ func (f *fakeAdapter) ExecuteRevision(
 	}, nil
 }
 
+// fakeSessionAdapter 是 fakeAdapter 的会话形态：嵌入单轮 fake 复用 ResourceAdapter 的
+// ExecuteRevision/ResolveRevision/SafeSummary，追加 RunSession 把适配器升级为
+// port.SessionRunner（runCaseSession 类型断言目标）。RunSession 逐轮回显 User 作为
+// Output，token/duration 按轮递增；sessionErr 非空时产出前两轮后返回错误，模拟逐轮
+// 执行中途失败（partial evidence 场景）。
+type fakeSessionAdapter struct {
+	*fakeAdapter
+	sessionErr error
+	runTenant  string
+	lastScript domain.EvalSessionScript
+}
+
+func (f *fakeSessionAdapter) RunSession(
+	_ context.Context, tenantID, _ string, _ domain.ResourceRef, script domain.EvalSessionScript,
+) ([]domain.SessionTurnEvidence, error) {
+	f.runTenant = tenantID
+	f.lastScript = script
+	turns := make([]domain.SessionTurnEvidence, 0, len(script.Turns))
+	for i, turn := range script.Turns {
+		if f.sessionErr != nil && i >= 2 {
+			return turns, f.sessionErr
+		}
+		turns = append(turns, domain.SessionTurnEvidence{
+			Index: i, User: turn.User, Output: turn.User, TraceID: "trace-session",
+			Tokens: 10 * (i + 1), CostUSD: 0.01 * float64(i+1), DurationMs: 20 * (i + 1),
+		})
+	}
+	return turns, nil
+}
+
+const errFakeSession = fakeError("session execution failed at turn 2")
+
 type fakeRunRepo struct {
 	saved    domain.EvalRun
 	tenantID string
@@ -233,6 +556,18 @@ func (f *fakeRunRepo) SaveRun(_ context.Context, tenantID string, run domain.Eva
 
 func (f *fakeRunRepo) GetRun(_ context.Context, _ string, runID string) (domain.EvalRun, bool, error) {
 	return f.saved, f.saved.ID == runID, nil
+}
+
+func (f *fakeRunRepo) FindLatestCompletedRunForResource(
+	_ context.Context, _ string, _ domain.ResourceRef, _ string,
+) (*domain.EvalRun, error) {
+	return nil, nil
+}
+
+func (f *fakeRunRepo) FindLatestCompletedRunForPlatformSeq(
+	_ context.Context, _, _ string, _ int64,
+) (*domain.EvalRun, error) {
+	return nil, nil
 }
 
 type fakeError string

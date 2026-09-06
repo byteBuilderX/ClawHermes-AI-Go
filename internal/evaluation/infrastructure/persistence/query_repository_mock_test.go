@@ -114,16 +114,32 @@ func TestPgCenterQueryRepository_ListSuites_paginated(t *testing.T) {
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT s.id,s.name").
 		WithArgs("", "", "", (*time.Time)(nil), (*string)(nil), 2).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "description", "status", "created_by", "created_at"}).
-			AddRow("suite-2", "s2", "d2", "published", "user-2", now.Add(-1*time.Hour)).
-			AddRow("suite-1", "s1", "", "draft", "", now.Add(-2*time.Hour)))
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "name", "description", "resource_kind", "status", "created_by", "created_at",
+			"active_revision_id", "draft_revision_id", "active_version_no", "draft_version_no",
+			"active_case_count", "draft_case_count",
+		}).
+			// 已发布套件：active v5 + 继承草稿（无版本号→0）。
+			AddRow("suite-2", "s2", "d2", "prompt", "published", "user-2", now.Add(-1*time.Hour),
+				"rev-2", "rev-3", 5, 0, 8, 3).
+			// 草稿-only 套件：无 active。
+			AddRow("suite-1", "s1", "", "skill", "draft", "", now.Add(-2*time.Hour),
+				"", "rev-1", 0, 0, 0, 1))
 	mock.ExpectCommit()
 
 	page, err := repo.ListSuites(context.Background(), "t1", port.CenterFilter{Limit: 1})
 	require.NoError(t, err)
 	require.Len(t, page.Items, 1)
 	require.NotEmpty(t, page.NextCursor)
-	require.Equal(t, "s2", page.Items[0].Name)
+	first := page.Items[0]
+	require.Equal(t, "s2", first.Name)
+	require.Equal(t, domain.ResourceKind("prompt"), first.ResourceKind)
+	require.Equal(t, "published", first.Status)
+	require.Equal(t, "rev-2", first.ActiveRevisionID)
+	require.Equal(t, "rev-3", first.DraftRevisionID)
+	require.Equal(t, 5, first.ActiveVersionNo)
+	require.Equal(t, 8, first.ActiveCaseCount)
+	require.Equal(t, 3, first.DraftCaseCount)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

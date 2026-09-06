@@ -21,7 +21,13 @@ type evaluationSuiteService interface {
 	Create(ctx context.Context, tenantID string, input evalapp.CreateSuiteInput) (domain.EvalSuite, domain.EvalSuiteRevision, error)
 	Publish(ctx context.Context, tenantID, suiteID string) (domain.EvalSuiteRevision, error)
 	GetDraft(ctx context.Context, tenantID, suiteID string) (domain.EvalSuiteRevision, error)
+	GetRevision(ctx context.Context, tenantID, revisionID string) (domain.EvalSuiteRevision, error)
 	UpdateDraftCase(ctx context.Context, tenantID, suiteID, caseID string, testCase domain.EvalCase) (domain.EvalCase, error)
+	GetSuiteDetail(ctx context.Context, tenantID, suiteID string) (domain.SuiteDetail, error)
+	ListVersions(ctx context.Context, tenantID, suiteID string) ([]domain.SuiteRevisionMeta, error)
+	AddDraftCase(ctx context.Context, tenantID, suiteID string, testCase domain.EvalCase) (domain.EvalCase, error)
+	DeleteDraftCase(ctx context.Context, tenantID, suiteID, caseID string) error
+	StartNextDraft(ctx context.Context, tenantID, suiteID string) (domain.EvalSuiteRevision, error)
 }
 
 type evaluationCaseGenerator interface {
@@ -65,6 +71,8 @@ type evaluationQueryService interface {
 	ListCandidates(context.Context, string, port.CenterFilter) (domain.CandidatePage, error)
 	ListExperiments(context.Context, string, port.CenterFilter) (domain.ExperimentPage, error)
 	Timeline(context.Context, string, port.CenterFilter) (domain.TimelinePage, error)
+	MonitorResources(context.Context, string, port.MonitorFilter) (domain.MonitorResourcesPage, error)
+	MonitorTrend(context.Context, string, port.MonitorFilter) (domain.MonitorTrendSeries, error)
 }
 
 type evaluationCandidateCommandService interface {
@@ -238,8 +246,10 @@ func (h *EvaluationHandler) CreateSuite(c *gin.Context) {
 }
 
 // toDomainCase converts one create-suite request case into a domain.EvalCase,
-// copying the assertion config (judge_spec / tool_spec / step_judge) verbatim
-// so the payloads bind to the domain shapes.
+// copying the assertion config (judge_spec / tool_spec / step_judge) and the
+// session script (阶段 B §5.4) verbatim so the payloads bind to the domain
+// shapes. Session cases carry no single-turn input (input is meaningless under
+// the multi-turn runner); the shape validation happens in the application layer.
 func toDomainCase(item gen.EvaluationCaseRequest) domain.EvalCase {
 	enabled := true
 	if item.Enabled != nil {
@@ -248,6 +258,7 @@ func toDomainCase(item gen.EvaluationCaseRequest) domain.EvalCase {
 	testCase := domain.EvalCase{
 		Name: item.Name, Input: item.Input, ExpectedOutput: item.ExpectedOutput,
 		AssertionMode: domain.AssertionMode(item.AssertionMode), Enabled: enabled,
+		Session: toSessionScript(item.Session),
 	}
 	if item.JudgeSpec != nil {
 		testCase.JudgeSpec = &domain.JudgeSpec{Model: item.JudgeSpec.Model, Rubric: item.JudgeSpec.Rubric}
@@ -262,6 +273,27 @@ func toDomainCase(item gen.EvaluationCaseRequest) domain.EvalCase {
 		testCase.StepJudge = &domain.StepJudge{Criteria: item.StepJudge.Criteria}
 	}
 	return testCase
+}
+
+// toSessionScript converts the request-layer session script into the domain
+// shape, mapping each turn's optional tool_spec the same way the case-level
+// tool_spec is mapped. A nil request script yields nil (old single-turn case).
+func toSessionScript(script *gen.EvalSessionScript) *domain.EvalSessionScript {
+	if script == nil {
+		return nil
+	}
+	turns := make([]domain.SessionTurn, 0, len(script.Turns))
+	for _, turn := range script.Turns {
+		t := domain.SessionTurn{User: turn.User, Probe: turn.Probe}
+		if turn.ToolSpec != nil {
+			t.ToolSpec = &domain.ToolSpec{
+				MustCall: turn.ToolSpec.MustCall, MustNotCall: turn.ToolSpec.MustNotCall,
+				Order: turn.ToolSpec.Order, MaxCalls: int(turn.ToolSpec.MaxCalls),
+			}
+		}
+		turns = append(turns, t)
+	}
+	return &domain.EvalSessionScript{Goal: script.Goal, Turns: turns}
 }
 
 func (h *EvaluationHandler) PublishSuite(c *gin.Context) {
@@ -351,12 +383,120 @@ func (h *EvaluationHandler) UpdateDraftCase(c *gin.Context) {
 		ExpectedOutput: req.ExpectedOutput,
 		AssertionMode:  domain.AssertionMode(req.AssertionMode),
 		Enabled:        enabled,
+		Session:        toSessionScript(req.Session),
 	})
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 	c.JSON(http.StatusOK, updated)
+}
+
+// GetSuiteDetail returns the suite header meta for the detail page: base fields
+// plus the current active/draft version numbers, enabled case counts, resource
+// kind and status aggregated from the revision chain. member 可读。
+func (h *EvaluationHandler) GetSuiteDetail(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	detail, err := h.suites.GetSuiteDetail(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, detail)
+}
+
+// ListSuiteVersions returns the lightweight revision chain (published newest
+// first, draft last) without case bodies. member 可读。
+func (h *EvaluationHandler) ListSuiteVersions(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	metas, err := h.suites.ListVersions(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	if metas == nil {
+		metas = []domain.SuiteRevisionMeta{}
+	}
+	c.JSON(http.StatusOK, metas)
+}
+
+// GetSuiteRevision returns one revision's full case bodies (single-turn cases
+// with assertion config, session scripts included) for read-only display.
+// member 可读。
+func (h *EvaluationHandler) GetSuiteRevision(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	revision, err := h.suites.GetRevision(c.Request.Context(), tenantID, c.Param("revisionId"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, revision)
+}
+
+// StartNextDraft guarantees an editable draft for the suite: returns the
+// existing one, or on a legacy suite (published, no draft) inherits the active
+// revision's cases into a new draft. admin。成功 200 返回（可能带 cases 的）草稿。
+func (h *EvaluationHandler) StartNextDraft(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	draft, err := h.suites.StartNextDraft(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, draft)
+}
+
+// AddDraftCase appends one hand-authored case to the suite's draft revision.
+// admin；请求体复用 create-suite 的单 case 结构（gen.EvaluationCaseRequest），
+// 经 toDomainCase 转换后走与 Create/UpdateDraftCase 一致的 authoring 校验。
+func (h *EvaluationHandler) AddDraftCase(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	var req gen.EvaluationCaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		return
+	}
+	testCase, err := h.suites.AddDraftCase(c.Request.Context(), tenantID, c.Param("id"), toDomainCase(req))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, testCase)
+}
+
+// DeleteDraftCase removes one case from the suite's draft revision. admin；
+// 成功 204 空体，失败（case 不在当前草稿/无草稿/套件不存在）交给统一错误中间件。
+func (h *EvaluationHandler) DeleteDraftCase(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	if err := h.suites.DeleteDraftCase(c.Request.Context(), tenantID, c.Param("id"), c.Param("caseId")); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *EvaluationHandler) EnqueueRun(c *gin.Context) {
@@ -379,9 +519,10 @@ func (h *EvaluationHandler) EnqueueRun(c *gin.Context) {
 		Resource: domain.ResourceRef{
 			Kind: domain.ResourceKind(req.Resource.Kind), ResourceID: req.Resource.ResourceID, RevisionID: req.Resource.RevisionID,
 		},
-		SuiteRevisionID: req.SuiteRevisionID,
-		IdempotencyKey:  req.IdempotencyKey,
-		RequestedBy:     requestedBy,
+		SuiteRevisionID:      req.SuiteRevisionID,
+		IdempotencyKey:       req.IdempotencyKey,
+		RequestedBy:          requestedBy,
+		PlatformSeqOverrides: req.PlatformSeqOverrides,
 	})
 	if err != nil {
 		_ = c.Error(err)
@@ -764,6 +905,111 @@ func (h *EvaluationHandler) GetObservation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, obs)
+}
+
+// MonitorQuery 监控聚合查询参数（spec 2026-09-03 §4.2）。from/to 可选（RFC3339，
+// 缺省由 service 兜底近 EvalMonitorWindowDays 天）；端点 1 resource_kind/resource_id
+// 可选、limit 可选（默认/上限走 pkg/constants）；端点 2 trend 复用同 DTO，kind/id
+// 必填由 handler 校验。
+type MonitorQuery struct {
+	ResourceKind string     `form:"resource_kind"`
+	ResourceID   string     `form:"resource_id"`
+	From         *time.Time `form:"from" time_format:"2006-01-02T15:04:05Z07:00"`
+	To           *time.Time `form:"to" time_format:"2006-01-02T15:04:05Z07:00"`
+	Limit        int        `form:"limit"`
+}
+
+// ListMonitorResources 返回窗口内资源行四区摘要（spec §4.2 端点 1，member 可读）。
+func (h *EvaluationHandler) ListMonitorResources(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	var req MonitorQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		return
+	}
+	if err := validateMonitorResourcesQuery(req); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		return
+	}
+	page, err := h.queries.MonitorResources(c.Request.Context(), tenantID, port.MonitorFilter{
+		ResourceKind: req.ResourceKind, ResourceID: req.ResourceID, From: req.From, To: req.To, Limit: req.Limit,
+	})
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
+// GetMonitorTrend 返回单资源四区时间趋势（spec §4.2 端点 2，member 可读）。
+func (h *EvaluationHandler) GetMonitorTrend(c *gin.Context) {
+	tenantID, ok := tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	var req MonitorQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		return
+	}
+	if err := validateMonitorTrendQuery(req); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		return
+	}
+	series, err := h.queries.MonitorTrend(c.Request.Context(), tenantID, port.MonitorFilter{
+		ResourceKind: req.ResourceKind, ResourceID: req.ResourceID, From: req.From, To: req.To,
+	})
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, series)
+}
+
+// validateMonitorResourcesQuery 端点 1：kind 提供时须在资源白名单内；单传
+// resource_id 而无 kind 拒绝；from/to 同时提供时顺序合法。kind/id 均可不传
+// （整租户窗口汇总）。
+func validateMonitorResourcesQuery(req MonitorQuery) error {
+	if err := validateMonitorWindowQuery(req); err != nil {
+		return err
+	}
+	if req.ResourceID != "" && req.ResourceKind == "" {
+		return errors.New("resource_id requires resource_kind")
+	}
+	return nil
+}
+
+// validateMonitorTrendQuery 端点 2：在窗口/白名单校验基础上强制 kind+id 成对必填。
+func validateMonitorTrendQuery(req MonitorQuery) error {
+	if err := validateMonitorWindowQuery(req); err != nil {
+		return err
+	}
+	if req.ResourceKind == "" {
+		return errors.New("resource kind required")
+	}
+	if req.ResourceID == "" {
+		return errors.New("resource id required")
+	}
+	return nil
+}
+
+// validateMonitorWindowQuery 两端点共享：kind 若提供须为 skill|agent|mcp|knowledge
+// （复用 domain.ResourceKind.Validate）；from/to 同时提供时不得倒置。
+func validateMonitorWindowQuery(req MonitorQuery) error {
+	if req.ResourceKind != "" {
+		if err := domain.ResourceKind(req.ResourceKind).Validate(); err != nil {
+			return err
+		}
+	}
+	if req.From != nil && req.To != nil && req.From.After(*req.To) {
+		return errors.New("from must not be after to")
+	}
+	return nil
 }
 
 // ReviewListQuery 评审池分页查询参数（status/trigger_reason 为原始字符串，边界在

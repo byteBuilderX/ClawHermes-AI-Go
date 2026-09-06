@@ -87,3 +87,44 @@ func TestPlatformRepositoryGetAll(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestPlatformRepositoryListVersionsCreatedByName 锁定 ListVersions 对
+// public.users 的 LEFT JOIN + COALESCE 现算：真实用户出可读名，system/未知
+// uuid 无命中则回退 created_by 原文（display_name > github_login > 原文）。
+func TestPlatformRepositoryListVersionsCreatedByName(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	repo := &PlatformRepository{pool: mock}
+
+	mock.ExpectQuery(
+		`(?s)COALESCE\(u\.display_name, u\.github_login, v\.created_by\) AS created_by_name\s+FROM public\.platform_config_versions v\s+LEFT JOIN public\.users u ON u\.id::text = v\.created_by`).
+		WithArgs("evaluation").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "group_key", "version_seq", "status", "eval_state", "snapshot",
+			"base_version_id", "message", "created_by", "created_at", "is_current", "created_by_name",
+		}).
+			AddRow(int64(3), "evaluation", 3, "published", "unknown", []byte(`{"model":"qwen"}`), nil,
+				"publish #3", "user-abc", time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC), true, "Alice").
+			AddRow(int64(1), "evaluation", 1, "archived", "unknown", []byte(`{"model":"qwen"}`), nil,
+				"seed", "system", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), false, "system"))
+
+	versions, err := repo.ListVersions(context.Background(), "evaluation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+	if versions[0].CreatedBy != "user-abc" || versions[0].CreatedByName != "Alice" {
+		t.Fatalf("real user row: got CreatedBy=%q CreatedByName=%q, want user-abc/Alice", versions[0].CreatedBy, versions[0].CreatedByName)
+	}
+	if versions[1].CreatedBy != "system" || versions[1].CreatedByName != "system" {
+		t.Fatalf("system row: got CreatedBy=%q CreatedByName=%q, want system/system", versions[1].CreatedBy, versions[1].CreatedByName)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

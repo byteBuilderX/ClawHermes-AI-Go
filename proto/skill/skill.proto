@@ -75,6 +75,10 @@ message SkillRevisionResponse {
   // > actor_id), resolved at the response boundary. Display-only: the frontend
   // version-history 操作者 column prefers it over the raw id.
   string createdByName = 14;
+  // parentRevisionId 指向直父版本(首版为空,omitempty)。列表行已携带完整编辑面
+  // 内容,「详情」Drawer 以直父整份内容为 before 基线现算字段前后值,无需单版接口。
+  // @omitempty
+  string parentRevisionId = 15;
 }
 
 message SkillRevisionsResponse {

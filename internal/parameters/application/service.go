@@ -206,6 +206,19 @@ func (s *Service) Versions(ctx context.Context, groupKey string) ([]port.Platfor
 	return s.store.ListVersions(ctx, groupKey)
 }
 
+// GetVersion 转发：按 group+version_seq 读历史版本元数据（门禁/对照链路用）。
+func (s *Service) GetVersion(ctx context.Context, groupKey string, versionSeq int64) (port.PlatformVersion, error) {
+	return s.store.GetVersion(ctx, groupKey, versionSeq)
+}
+
+// UpdateEvalState 转发：给平台版本写门禁状态（actor 空默认 "api"，与 Publish/Rollback 一致）。
+func (s *Service) UpdateEvalState(ctx context.Context, groupKey string, versionSeq int64, state, actor string) error {
+	if actor == "" {
+		actor = "api"
+	}
+	return s.store.UpdateEvalState(ctx, groupKey, versionSeq, state, actor)
+}
+
 // groupSnapshot returns the production snapshot for a group, caching reads per
 // call so keys of the same group share one GetSnapshot.
 func (s *Service) groupSnapshot(

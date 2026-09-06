@@ -52,12 +52,40 @@ type ResourceSummary struct {
 }
 
 type SuiteSummary struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	CreatedBy   string    `json:"created_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	Description      string       `json:"description"`
+	ResourceKind     ResourceKind `json:"resource_kind,omitempty"`
+	Status           string       `json:"status"`
+	ActiveRevisionID string       `json:"active_revision_id,omitempty"`
+	DraftRevisionID  string       `json:"draft_revision_id,omitempty"`
+	ActiveVersionNo  int          `json:"active_version_no,omitempty"`
+	DraftVersionNo   int          `json:"draft_version_no,omitempty"`
+	// ActiveCaseCount / DraftCaseCount 是 active/draft revision 的启用 case 数
+	// （与 SuiteRevisionMeta.EnabledCaseCount 同口径）；无该 revision 时为 0。
+	ActiveCaseCount int       `json:"active_case_count,omitempty"`
+	DraftCaseCount  int       `json:"draft_case_count,omitempty"`
+	CreatedBy       string    `json:"created_by,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// SuiteDetail 是评测集详情页顶部元信息：套件自身字段叠加当前 active/draft
+// revision 的 kind/版本号/启用 case 数。case 正文不进本结构（草稿/版本正文走
+// 各自只读/编辑端点装载），避免详情元信息与正文两份读取互相拖累。
+type SuiteDetail struct {
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	Description      string       `json:"description"`
+	ResourceKind     ResourceKind `json:"resource_kind"`
+	Status           string       `json:"status"`
+	ActiveRevisionID string       `json:"active_revision_id,omitempty"`
+	DraftRevisionID  string       `json:"draft_revision_id,omitempty"`
+	ActiveVersionNo  int          `json:"active_version_no,omitempty"`
+	DraftVersionNo   int          `json:"draft_version_no,omitempty"`
+	ActiveCaseCount  int          `json:"active_case_count,omitempty"`
+	DraftCaseCount   int          `json:"draft_case_count,omitempty"`
+	CreatedBy        string       `json:"created_by,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
 }
 type RunSummary struct {
 	ID           string       `json:"id"`
@@ -145,4 +173,95 @@ type ExperimentPage struct {
 type TimelinePage struct {
 	Items      []TimelineEvent `json:"items"`
 	NextCursor string          `json:"next_cursor,omitempty"`
+}
+
+// ---- 评测指标监控面板（spec 2026-09-03 §4.2/§4.3）----
+
+// QualityDim 单 judge 语义维度聚合。score 已 0/1 归一，pass_rate 与 avg_score
+// 数值同源（SQL avg(score)）；仅窗口内实际出现过的维度出现，未出现维度不返回。
+type QualityDim struct {
+	Dimension     string  `json:"dimension"`
+	PassRate      float64 `json:"pass_rate"`
+	AvgScore      float64 `json:"avg_score"`
+	AvgConfidence float64 `json:"avg_confidence"`
+	Samples       int     `json:"samples"`
+}
+
+// VerdictDistribution verdict 三态分布计数。
+type VerdictDistribution struct {
+	Pass  int `json:"pass"`
+	Flag  int `json:"flag"`
+	Block int `json:"block"`
+}
+
+// BehaviorStats 行为区聚合。rule/behavior 未装配时计数为 0 属正常（非错误）。
+type BehaviorStats struct {
+	RuleHits         int                 `json:"rule_hits"`
+	RetryCount       int                 `json:"retry_count"`
+	EscalationCount  int                 `json:"escalation_count"`
+	AbandonmentCount int                 `json:"abandonment_count"`
+	Verdict          VerdictDistribution `json:"verdict"`
+}
+
+// CostStats 成本与延迟聚合。latency 无有效样本时为 null（诚实空态，不伪 0）。
+type CostStats struct {
+	TotalTokens  int64    `json:"total_tokens"`
+	TotalCostUSD float64  `json:"total_cost_usd"`
+	AvgLatencyMS *float64 `json:"avg_latency_ms"`
+	P95LatencyMS *float64 `json:"p95_latency_ms"`
+}
+
+// ProcessBaseline 窗口内最近一条 succeeded 评测 run 的过程通过率基线；无 run 时
+// process=null（面板显示「窗口内无评测」）。
+type ProcessBaseline struct {
+	ProcessPassRate float64   `json:"process_pass_rate"`
+	RunID           string    `json:"run_id"`
+	RunCreatedAt    time.Time `json:"run_created_at"`
+}
+
+// MonitorResourceSummary 端点 1 资源行四区摘要。
+type MonitorResourceSummary struct {
+	ResourceKind ResourceKind     `json:"resource_kind"`
+	ResourceID   string           `json:"resource_id"`
+	SampleCount  int              `json:"sample_count"`
+	Quality      []QualityDim     `json:"quality"`
+	Behavior     BehaviorStats    `json:"behavior"`
+	Cost         CostStats        `json:"cost"`
+	Process      *ProcessBaseline `json:"process"`
+}
+
+// MonitorWindow 响应实际生效窗口（含 service 兜底默认近 7 天后的值）。
+type MonitorWindow struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+// MonitorResourcesPage 端点 1 响应。
+type MonitorResourcesPage struct {
+	Items  []MonitorResourceSummary `json:"items"`
+	Window MonitorWindow            `json:"window"`
+}
+
+// MonitorTrendPoint 端点 2 series 的单日桶聚合。
+type MonitorTrendPoint struct {
+	BucketAt    time.Time     `json:"bucket_at"`
+	SampleCount int           `json:"sample_count"`
+	Quality     []QualityDim  `json:"quality"`
+	Behavior    BehaviorStats `json:"behavior"`
+	Cost        CostStats     `json:"cost"`
+}
+
+// RunProcessPoint 端点 2 runs：该资源窗口内 succeeded run 过程基线离散点。
+type RunProcessPoint struct {
+	RunID           string    `json:"run_id"`
+	ProcessPassRate float64   `json:"process_pass_rate"`
+	RunCreatedAt    time.Time `json:"run_created_at"`
+}
+
+// MonitorTrendSeries 端点 2 响应。
+type MonitorTrendSeries struct {
+	ResourceKind ResourceKind        `json:"resource_kind"`
+	ResourceID   string              `json:"resource_id"`
+	Series       []MonitorTrendPoint `json:"series"`
+	Runs         []RunProcessPoint   `json:"runs"`
 }

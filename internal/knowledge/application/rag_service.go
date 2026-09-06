@@ -229,7 +229,8 @@ type RAGService struct {
 	docRepo      knowledgeport.DocRepo
 	roleResolver knowledgeport.TenantRoleResolver
 	// judgeResolver 按请求中的 judge 模型解析证据充分性 judge（仅 evidence 路径
-	// 消费，Plain Query/API 面板零接触）；nil/解析失败 = fail-closed 放行。
+	// 消费，Plain Query/API 面板零接触）；nil/解析失败 = fail-open 放行（judge
+	// 门关或不判定时结果原样通过，与不配置一致，绝不误杀检索）。
 	judgeResolver SufficiencyJudgeResolver
 	// semanticReranker 是 builtin-score-v1 的 LLM 语义重排器；nil = 未装配
 	// （fail-open，builtin 走纯召回分数排序）。semanticTopN 是精排候选上限
@@ -282,7 +283,8 @@ func (rs *RAGService) resolveEmbedder(ctx context.Context, req RAGQueryRequest) 
 }
 
 // SufficiencyJudgeResolver 按请求中的 judge 模型解析证据充分性 judge；模型未知/
-// 目录校验失败返回 error（fail-closed 放行）。wiring 注入闭包，application 不
+// 目录校验失败返回 error（judge 实现契约 fail-closed：错误向上传播，由调用方
+// judgeSufficiencyGate 按 fail-open 原样放行）。wiring 注入闭包，application 不
 // import llmgateway（跨 context 接口定义在消费方）。
 type SufficiencyJudgeResolver func(ctx context.Context, model string) (knowledgeport.SufficiencyJudge, error)
 
@@ -347,6 +349,10 @@ type Source struct {
 	ParentContent string // non-empty when parent chunk was fetched (Parent-Child strategy)
 	ChunkIndex    int64
 	Score         float32
+	// DocumentTitle is the owning document's source file name, backfilled at
+	// the end of Query for the /knowledge/query citation cards. Display-only;
+	// empty when the doc index read fails (never fails the query).
+	DocumentTitle string
 }
 
 // DocumentPreview is the chunk-reassembled content of a document for the
@@ -477,6 +483,9 @@ func (rs *RAGService) Query(ctx context.Context, req RAGQueryRequest) (*RAGQuery
 	result.Latency = time.Since(startTime)
 
 	rs.expandParentContext(ctx, req, result)
+	// 来源卡片需文档名：decorateSourceTitles 仅按 DocumentID 从文档索引回填 title，
+	// 与 expandParentContext（只填 ParentContent、不增删分块）无顺序依赖，置于其后仅为聚合收尾。
+	rs.decorateSourceTitles(ctx, req.TenantID, req.WorkspaceID, result.Sources)
 
 	rs.logger.Info("RAG query completed",
 		zap.String("trace_id", sc.TraceID),
@@ -1386,7 +1395,7 @@ func searchWorkspaceWithEvidence(ctx context.Context, rs *RAGService, tenantID, 
 	}
 	// 充分性门（仅 evidence 路径）：判 INSUFFICIENT 时本 workspace 按无内容
 	// 处理（Sources 置空 + NoAnswer=insufficient_evidence），聚合按严重度
-	// 上报；fail-closed 降级原样放行。
+	// 上报；gate 无法判定时 fail-open 降级原样放行（不误杀检索）。
 	out = rs.judgeSufficiencyGate(ctx, tenantID, ws, query, rw.judgeModel, rw.judgeScoringInstructions, out)
 	titles := rs.documentTitles(ctx, tenantID, rw.workspaceID)
 	sources := make([]RAGSearchSource, 0, len(out.Sources))
@@ -1426,6 +1435,25 @@ func (rs *RAGService) documentTitles(ctx context.Context, tenantID, workspaceID 
 		}
 	}
 	return titles
+}
+
+// decorateSourceTitles backfills each query source's display title from the
+// workspace document index. Titles are display metadata only: index read
+// failures leave them empty rather than failing the query (documentTitles
+// logs the warning).
+func (rs *RAGService) decorateSourceTitles(ctx context.Context, tenantID, workspaceID string, sources []Source) {
+	if len(sources) == 0 {
+		return
+	}
+	applySourceTitles(sources, rs.documentTitles(ctx, tenantID, workspaceID))
+}
+
+func applySourceTitles(sources []Source, titles map[string]string) {
+	for i := range sources {
+		if title, ok := titles[sources[i].DocumentID]; ok {
+			sources[i].DocumentTitle = title
+		}
+	}
 }
 
 // mergeEvidenceResults keeps the same at-least-one semantics as mergeResults:

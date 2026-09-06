@@ -2,7 +2,7 @@
   {
     "name": "authenticated-success",
     "method": "PATCH",
-    "path": "/tenant/members/:user_id/role",
+    "path": "/tenant/members/contract-user/role",
     "want_status": 403,
     "want_body": {
       "error": "iam: owner role required"

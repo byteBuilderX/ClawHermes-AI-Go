@@ -53,6 +53,10 @@ type EvalCase struct {
 	ExpectedOutput any           `json:"expected_output"`
 	AssertionMode  AssertionMode `json:"assertion_mode"`
 	Enabled        bool          `json:"enabled"`
+	// Session 是会话剧本（spec 2026-09-04 §5.4 阶段 B）：非 nil 时 case 走多轮
+	// 会话执行语义（SessionRunner），ExpectedOutput/AssertionMode 作为末轮终态断言；
+	// nil = 旧单轮 case。持久化在独立 eval_cases.session JSONB 列（'{}' 解码回 nil）。
+	Session *EvalSessionScript `json:"session,omitempty"`
 	// JudgeSpec configures LLM judge assertion for assertion_mode=judge.
 	// Both fields are optional: empty Model/Rubric fall back to platform
 	// parameters and the registered global rubric respectively. Persisted in
@@ -277,12 +281,26 @@ const (
 )
 
 type EvalSuite struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Description      string `json:"description"`
-	ActiveRevisionID string `json:"active_revision_id,omitempty"`
-	DraftRevisionID  string `json:"draft_revision_id,omitempty"`
-	CreatedBy        string `json:"created_by,omitempty"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description"`
+	ActiveRevisionID string    `json:"active_revision_id,omitempty"`
+	DraftRevisionID  string    `json:"draft_revision_id,omitempty"`
+	CreatedBy        string    `json:"created_by,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+}
+
+// SuiteRevisionMeta 是套件版本列表行的轻量投影：不装载 cases，只带版本号、
+// 状态、kind、创建者、发布时间与启用 case 数。草稿 revision 的 version_no 为
+// NULL（未分配版本号）读回时归 0；published_at 同样可空。
+type SuiteRevisionMeta struct {
+	ID               string              `json:"id"`
+	VersionNo        int                 `json:"version_no,omitempty"`
+	Status           SuiteRevisionStatus `json:"status"`
+	ResourceKind     ResourceKind        `json:"resource_kind"`
+	CreatedBy        string              `json:"created_by,omitempty"`
+	PublishedAt      *time.Time          `json:"published_at,omitempty"`
+	EnabledCaseCount int                 `json:"enabled_case_count"`
 }
 
 type EvalCaseResult struct {
@@ -322,6 +340,15 @@ type EvalCaseResult struct {
 	// Tools 是执行链路工具调用序列（§6.5），过程断言与评审详情展示用；未采集
 	// 时为空。
 	Tools []ToolObservation `json:"tools,omitempty"`
+	// Turns 是会话剧本逐轮执行证据（阶段 B）：会话 case 非空、旧单轮 case 为空。
+	// 落 eval_case_results.turns JSONB（'[]' 解码回 nil）。
+	Turns []SessionTurnEvidence `json:"turns,omitempty"`
+	// Trajectory 是会话演化轨迹判据产出（阶段 B §4.2）：判定会话是否一路收敛到
+	// 目标（converged）、绕圈空转（stalled）还是到达后推翻（drifted）。指针 +
+	// omitempty：旧单轮 case（无轨迹维度）保持 nil、JSON 省略，既有 wire 与 golden
+	// 不受影响；会话 case 由 runCaseSession 判定后非 nil。当前为派生值，不持久化
+	// 到 eval_case_results（评审快照与运行结果均可得，需落列时后续 slice 再扩展）。
+	Trajectory *TrajectoryVerdict `json:"trajectory,omitempty"`
 }
 
 // RAGEvidenceInfo is the per-case retrieval signal for knowledge runs. The
@@ -378,6 +405,26 @@ const (
 )
 
 const JobTypeEvalRun = "eval_run"
+
+// JobTypePlatformVerify 平台版本回滚后的多租户验证任务（spec §3.4-3）。
+// evaluation_jobs.job_type 列无 CHECK 约束，新 job 类型零 DDL。
+const JobTypePlatformVerify = "platform_verify"
+
+// PlatformVerifyPayload 持久化于 evaluation_jobs.payload（JSONB）；host 租户来自动作
+// 载荷（O2/R29）。
+type PlatformVerifyPayload struct {
+	GroupKey string `json:"group_key"`
+	FromSeq  int64  `json:"from_seq"` // 回滚离开的坏版本 seq（曾为 production）
+	ToSeq    int64  `json:"to_seq"`   // 回滚到的目标 seq（当前 production）
+	Actor    string `json:"actor"`
+}
+
+// PlatformVerifyJob 是 ClaimPlatformVerify 返回的本地 job 视图（DB 行 → runner 消费）。
+type PlatformVerifyJob struct {
+	ID       string
+	TenantID string
+	Payload  PlatformVerifyPayload
+}
 
 type EvalRunJobPayload struct {
 	Resource        ResourceRef `json:"resource"`

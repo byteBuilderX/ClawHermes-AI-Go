@@ -13,8 +13,10 @@ import (
 	"github.com/byteBuilderX/stratum/config"
 	"github.com/byteBuilderX/stratum/internal/agent/domain/port"
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
+	llmgateway "github.com/byteBuilderX/stratum/internal/llmgateway/infrastructure"
 	memory "github.com/byteBuilderX/stratum/internal/memory/application"
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/persistence"
 	pipeline "github.com/byteBuilderX/stratum/internal/memory/infrastructure/pipeline"
 	memworkers "github.com/byteBuilderX/stratum/internal/memory/infrastructure/workers"
@@ -229,6 +231,9 @@ func (c *Container) buildMemoryPipeline(mem *Memory, db *pgxpool.Pool) error {
 	c.attachPipelineDynamic(p)
 	if c.LLMGateway != nil && c.LLMGateway.Metrics != nil {
 		pipeline.RegisterMetrics(c.LLMGateway.Metrics.Registerer())
+		// modelconfig 指标进程级同一 registerer 幂等注册；pipeline 与 workers 两
+		// 装配点各调一次也不重复收集（见 RegisterMetrics 吞 AlreadyRegistered）。
+		modelconfig.RegisterMetrics(c.LLMGateway.Metrics.Registerer())
 	}
 	if c.Knowledge != nil && c.Knowledge.EmbedResolver != nil {
 		p.SetEmbedResolver(c.Knowledge.EmbedResolver)
@@ -424,6 +429,69 @@ func (a injectorAdapter) BuildContext(ctx context.Context, ic port.InjectionCont
 	})
 }
 
+// modelConfigEnabledCatalog 把 *llmgateway.ModelRegistry 的 enabled 名单方法适配
+// 到 modelconfig.EnabledCatalog。方法名不同、语义一致（全局 enabled chat/embed
+// 模型名）；探针用它做目录比对，不构造 client。
+type modelConfigEnabledCatalog struct {
+	registry *llmgateway.ModelRegistry
+}
+
+func (a modelConfigEnabledCatalog) ChatEnabled(ctx context.Context) ([]string, error) {
+	return a.registry.ListChatModelsByTenant(ctx)
+}
+
+func (a modelConfigEnabledCatalog) EmbedEnabled(ctx context.Context) ([]string, error) {
+	return a.registry.ListEmbeddingModelsByTenant(ctx)
+}
+
+// memoryModelConfigRequirements 返回当前装配下「必需」的记忆模型平台参数清单
+// （探针完备性检查口径）。组件未装配的 key 不列入，避免误报：
+//
+//   - LLMGateway 目录或平台参数服务缺失 → nil（无从判定，探针空转）；
+//   - pipeline 在场（c.Memory.Pipeline 非空）→ extraction/reflection/enrich/
+//     summary/embedding 必需——这些消费点只随 pipeline 装配；
+//   - Registry 在场 → supersede/history_summary 必需——llmRes 装配即会为租户
+//     起对应周期 worker（memoryModelConfigProbe 只在 BuildMemoryWorkers 挂载，
+//     该入口已保证 db/Service 在场）。
+func (c *Container) memoryModelConfigRequirements() []modelconfig.Requirement {
+	if c.LLMGateway == nil || c.LLMGateway.Registry == nil {
+		return nil
+	}
+	if c.Parameters == nil || c.Parameters.Service == nil {
+		return nil
+	}
+	var reqs []modelconfig.Requirement
+	if c.Memory != nil && c.Memory.Pipeline != nil {
+		reqs = append(reqs,
+			modelconfig.Requirement{Key: modelconfig.KeyExtractionModel, Kind: modelconfig.KindChat},
+			modelconfig.Requirement{Key: modelconfig.KeyReflectionModel, Kind: modelconfig.KindChat},
+			modelconfig.Requirement{Key: modelconfig.KeyEnrichModel, Kind: modelconfig.KindChat},
+			modelconfig.Requirement{Key: modelconfig.KeySummaryModel, Kind: modelconfig.KindChat},
+			modelconfig.Requirement{Key: modelconfig.KeyEmbeddingModel, Kind: modelconfig.KindEmbed},
+		)
+	}
+	reqs = append(reqs,
+		modelconfig.Requirement{Key: modelconfig.KeySupersedeModel, Kind: modelconfig.KindChat},
+		modelconfig.Requirement{Key: modelconfig.KeyHistorySummaryModel, Kind: modelconfig.KindChat},
+	)
+	return reqs
+}
+
+// memoryModelConfigProbe 构造记忆模型参数完备性探针；目录/参数服务/必需集任一
+// 不满足返回 nil，由 BuildMemoryWorkers 决定是否挂载（与周期 worker 同生命周期）。
+func (c *Container) memoryModelConfigProbe() *modelconfig.Probe {
+	reqs := c.memoryModelConfigRequirements()
+	if len(reqs) == 0 {
+		return nil
+	}
+	return modelconfig.NewProbe(
+		c.Parameters.Service,
+		modelConfigEnabledCatalog{registry: c.LLMGateway.Registry},
+		reqs,
+		c.Logger,
+	)
+}
+
 // memoryWorker 是记忆后台 worker 的生命周期接口。
 type memoryWorker interface {
 	Start(context.Context)
@@ -450,6 +518,9 @@ func BuildMemoryWorkers(c *Container) []memoryWorker {
 
 	if c.LLMGateway != nil && c.LLMGateway.Metrics != nil {
 		memworkers.RegisterMetrics(c.LLMGateway.Metrics.Registerer())
+		// 与 pipeline 装配点同 registerer 幂等注册；pipeline 禁用而 workers 在场时
+		// 也保证 modelconfig 指标可见。
+		modelconfig.RegisterMetrics(c.LLMGateway.Metrics.Registerer())
 	}
 
 	var llmRes *tenantCapabilityResolver
@@ -472,6 +543,12 @@ func BuildMemoryWorkers(c *Container) []memoryWorker {
 
 	if w := c.bufferScannerWorker(); w != nil {
 		result = append(result, w)
+	}
+
+	// 记忆模型参数完备性探针：与流量无关，周期比对平台参数 × enabled 目录，
+	// 随 memory workers 同起同停。装配不满足时返回 nil（不误报）。
+	if probe := c.memoryModelConfigProbe(); probe != nil {
+		result = append(result, probe)
 	}
 
 	return result

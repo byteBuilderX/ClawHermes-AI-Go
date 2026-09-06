@@ -11,6 +11,7 @@ import (
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
 	"github.com/byteBuilderX/stratum/internal/memory/domain"
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 )
 
@@ -59,19 +60,6 @@ func (r *TrajectoryReflector) reflectionPrompt(ctx context.Context) (string, err
 	return strings.ReplaceAll(s, "{existing_facts}", ""), nil
 }
 
-// reflectionModel 解析 memory.reflection_model；"" 表示 llmgateway 默认模型。
-func (r *TrajectoryReflector) reflectionModel(ctx context.Context) string {
-	if r.resolver == nil {
-		return ""
-	}
-	v, ok, err := r.resolver.ResolvePlatform(ctx, "memory.reflection_model")
-	if err != nil || !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
-}
-
 // Reflect 调用反思模型：system 为平台级提示词，user 为骨架 JSON + 任务目标。
 // 输出契约由 parseReflectionEntries + ExtractedFact.Validate 强制。
 func (r *TrajectoryReflector) Reflect(
@@ -92,7 +80,13 @@ func (r *TrajectoryReflector) Reflect(
 	if skeleton.TaskGoal != "" {
 		userMsg += "\n\nTask goal: " + skeleton.TaskGoal
 	}
-	model := r.reflectionModel(ctx)
+	// 反思模型为必需平台参数（fail-closed）：未显式配置或解析失败即返回
+	// *modelconfig.Err，禁止空模型静默回落 llmgateway 默认。
+	model, err := modelconfig.ResolveChatModel(ctx, r.resolver, modelconfig.KeyReflectionModel)
+	if err != nil {
+		logConfigError(r.logger, modelconfig.KeyReflectionModel, "reflection", err)
+		return nil, err
+	}
 	req := llmdomain.NewExtractRequest(model, system, userMsg, 0, constants.MemoryReflectionLLMMaxTokens)
 	return reflectStructured(ctx, r.client, req, r.logger)
 }

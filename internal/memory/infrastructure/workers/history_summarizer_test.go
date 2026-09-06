@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/workers"
 	"github.com/stretchr/testify/require"
 )
@@ -57,22 +58,39 @@ func TestResolvingHistoryProcessorRecoversWithoutReusingOldClient(t *testing.T) 
 	require.Equal(t, 1, calls)
 }
 
-// TestHistoryProcessorFailsClosedWithoutPrompt 验证未配置 history_summary_prompt
-// 即失败（fail-closed，无内置前缀兜底）。
-func TestHistoryProcessorFailsClosedWithoutPrompt(t *testing.T) {
+// TestHistoryProcessorFailsClosedWithoutModel 验证未装配参数服务（nil resolver，
+// history_summary_model 空）即失败：*modelconfig.Err 且 State==missing，fail-closed，
+// 绝不回落 llmgateway 默认。
+func TestHistoryProcessorFailsClosedWithoutModel(t *testing.T) {
 	client := completionClientFunc(func(_ context.Context, _ *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
 		return &llmdomain.CompletionResponse{Content: "s"}, nil
 	})
 	processor := workers.NewLLMHistorySummarizer(client)
 
-	// 无 paramResolver 时解析回落空串 → fail-closed。
+	_, err := processor.SummarizeHistory(context.Background(), []string{"item"})
+	ce, ok := modelconfig.AsConfigError(err)
+	require.True(t, ok, "want *modelconfig.Err, got %v", err)
+	require.Equal(t, modelconfig.KeyHistorySummaryModel, ce.Key)
+	require.Equal(t, modelconfig.StateMissing, ce.State)
+}
+
+// TestHistoryProcessorFailsClosedWithoutPrompt 验证显式配置了 history_summary_model
+// 但未配置 history_summary_prompt 即失败（fail-closed，无内置前缀兜底）。
+func TestHistoryProcessorFailsClosedWithoutPrompt(t *testing.T) {
+	client := completionClientFunc(func(_ context.Context, _ *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
+		return &llmdomain.CompletionResponse{Content: "s"}, nil
+	})
+	processor := workers.NewLLMHistorySummarizer(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
+		"memory.history_summary_model": testModel,
+	}})
+
 	_, err := processor.SummarizeHistory(context.Background(), []string{"item"})
 	require.ErrorContains(t, err, "memory.history_summary_prompt not configured")
 }
 
-// TestHistoryProcessorLeavesModelEmpty 验证总结请求 Model 为空（llmgateway
-// client 默认解析，pre-refactor 行为；金丝雀回归）。
-func TestHistoryProcessorLeavesModelEmpty(t *testing.T) {
+// TestHistoryProcessorUsesConfiguredModel 验证总结请求 Model = 平台参数显式配置的
+// history_summary_model（空值回落已废除：模型缺失时 fail-closed，不会以空串放行）。
+func TestHistoryProcessorUsesConfiguredModel(t *testing.T) {
 	var gotModel string
 	client := completionClientFunc(func(_ context.Context, req *llmdomain.CompletionRequest) (*llmdomain.CompletionResponse, error) {
 		gotModel = req.Model
@@ -83,8 +101,8 @@ func TestHistoryProcessorLeavesModelEmpty(t *testing.T) {
 	if _, err := processor.SummarizeHistory(context.Background(), []string{"item"}); err != nil {
 		t.Fatal(err)
 	}
-	if gotModel != "" {
-		t.Fatalf("expected empty model by default, got %q", gotModel)
+	if gotModel != testModel {
+		t.Fatalf("expected model %q propagated to request, got %q", testModel, gotModel)
 	}
 }
 
@@ -100,6 +118,7 @@ func TestHistoryProcessorRoundsPlatformTemperature(t *testing.T) {
 	})
 	processor := workers.NewLLMHistorySummarizer(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.history_summary_prompt":      testHistorySummaryPrompt,
+		"memory.history_summary_model":       testModel,
 		"memory.history_summary_temperature": float64(0.2),
 	}})
 
@@ -121,6 +140,7 @@ func TestHistoryProcessorZeroTemperatureStaysUnset(t *testing.T) {
 	})
 	processor := workers.NewLLMHistorySummarizer(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.history_summary_prompt":      testHistorySummaryPrompt,
+		"memory.history_summary_model":       testModel,
 		"memory.history_summary_temperature": float64(0),
 	}})
 

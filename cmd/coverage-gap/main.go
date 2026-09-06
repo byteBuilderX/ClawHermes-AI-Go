@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/byteBuilderX/stratum/pkg/reporoot"
 )
 
 // route represents a single HTTP route registered in Gin.
@@ -75,7 +77,7 @@ func main() {
 	flag.BoolVar(&asJSON, "json", false, "output JSON")
 	flag.Parse()
 
-	repoRoot := findRepoRoot()
+	repoRoot := reporoot.Find()
 	if routerFile == "" {
 		routerFile = filepath.Join(repoRoot, "api/http/router.go")
 	}
@@ -491,22 +493,4 @@ func parseMutation(raw string) manifestMutation {
 		return manifestMutation{Path: raw}
 	}
 	return manifestMutation{Method: method, Path: path}
-}
-
-// findRepoRoot walks up from cwd to find go.mod.
-func findRepoRoot() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "."
-		}
-		dir = parent
-	}
 }

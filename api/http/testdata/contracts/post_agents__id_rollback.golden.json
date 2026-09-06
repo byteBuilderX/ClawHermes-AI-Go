@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default-unauth",
+    "method": "POST",
+    "path": "/agents/:id/rollback",
+    "body": {
+      "error": "missing bearer token"
+    },
+    "want_status": 401
+  }
+]

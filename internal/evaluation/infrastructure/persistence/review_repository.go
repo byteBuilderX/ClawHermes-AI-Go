@@ -201,7 +201,7 @@ func reviewFilterConds(f port.ReviewFilter) (string, []any) {
 // high=0、medium=1、low=2；同风险按 created_at DESC（维持既有最新优先）。修改 RiskLevel()
 // 必须同步本表达式（两端注释互指）。
 func reviewRiskOrderSQL() string {
-	return `CASE trigger_reason WHEN 'judge_rule_conflict' THEN 0 WHEN 'process_output_conflict' THEN 0 WHEN 'low_confidence' THEN 1 WHEN 'dimension_split' THEN 1 WHEN 'needs_review' THEN 1 ELSE 2 END`
+	return `CASE trigger_reason WHEN 'judge_rule_conflict' THEN 0 WHEN 'process_output_conflict' THEN 0 WHEN 'low_confidence' THEN 1 WHEN 'dimension_split' THEN 1 WHEN 'needs_review' THEN 1 WHEN 'behavior_anomaly' THEN 1 WHEN 'trajectory_failed' THEN 1 ELSE 2 END`
 }
 
 func (r *PgReviewRepository) MarkReviewed(

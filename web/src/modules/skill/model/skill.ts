@@ -21,7 +21,8 @@ export type SkillProduct = Skill;
 
 // skillRevisionSchema: 版本化编辑面，保留 name/description/instructions 三字段
 //（skill 模型收敛，删除了 capability/activation_contract）。isCurrent 仅版本
-// 历史列表填充，标记当前生效版本。
+// 历史列表填充，标记当前生效版本。列表行携带完整编辑面内容，「详情」Drawer
+// 以直父(parentRevisionId)整份内容为 before 基线现算字段前后值。
 export const skillRevisionSchema = z.object({
   id: z.string(), skillId: z.string(), revisionNo: z.number().optional(), status: z.string(),
   name: z.string().default(''), description: z.string().default(''),
@@ -31,6 +32,8 @@ export const skillRevisionSchema = z.object({
   createdBy: z.string().optional().default(''),
   createdByName: z.string().optional().default(''),
   createdAt: z.string().optional().default(''),
+  // ParentRevisionID 指向直父版本（首版为空串）；Drawer 以父版本内容为变更前基线。
+  parentRevisionId: z.string().optional().default(''),
 }).passthrough();
 export type SkillRevision = z.infer<typeof skillRevisionSchema>;
 export type SkillVersion = SkillRevision;

@@ -38,9 +38,32 @@ message StepJudge {
   string criteria = 1;
 }
 
+// EvalSessionScript 是会话剧本（spec 2026-09-04 §5.4 阶段 B）：把单轮 case 泛化为
+// 多轮会话形态。Goal 描述被测任务终点；Turns 逐轮注入 user 消息。提供 session 的
+// case 即会话剧本（执行走 SessionRunner，多轮、终态断言作用末轮）；缺省（nil）=
+// 旧单轮 case。与单轮 input 互斥表达：按用例形态二选一，会话 case 不需要 input。
+message EvalSessionScript {
+  // @binding: required
+  string goal = 1;
+  // @binding: required,min=1,dive
+  repeated SessionTurn turns = 2;
+}
+
+// SessionTurn 是会话剧本的一轮。user 是注入 agent 的消息（必填）；probe 是该轮
+// 期望 / 探针锚点（逐轮 checkpoint，阶段 B 承载、S3 轨迹判据消费）；tool_spec 是该
+// 轮工具序列过程断言（nil = 该轮不做确定性过程校验）。
+message SessionTurn {
+  // @binding: required
+  string user = 1;
+  string probe = 2;
+  optional ToolSpec tool_spec = 3;
+}
+
 message EvaluationCaseRequest {
   string name = 1;
-  // @binding: required
+  // 单轮 case 的测试输入（query），由服务端按形态校验：session 缺省（单轮）时必填；
+  // 会话剧本 case（提供 session）不需要 input，可省略。keep 语义：不再强制绑定
+  // required，改为 service 层 validateCaseShape 决定——同一请求消息承载两种互斥形态。
   google.protobuf.Value input = 2;
   // @binding: required
   google.protobuf.Value expected_output = 3;
@@ -53,6 +76,9 @@ message EvaluationCaseRequest {
   optional ToolSpec tool_spec = 7;
   // 步骤级 LLM rubric（§6.5）；nil 表示不做步骤级 judge。
   optional StepJudge step_judge = 8;
+  // 会话剧本（阶段 B §5.4）；nil = 旧单轮 case。提供时 case 走多轮会话执行语义，
+  // expected_output/assertion_mode 作为末轮终态断言。编辑 draft case 时随全量替换。
+  optional EvalSessionScript session = 9;
 }
 
 message CreateEvaluationSuiteRequest {
@@ -73,6 +99,8 @@ message EnqueueEvaluationRunRequest {
   string suite_revision_id = 2;
   // @binding: required,max=255
   string idempotency_key = 3;
+  // 平台组历史版本覆盖（对照确认 run 重放）；空 = 现 IsCurrent 语义。
+  map<string, int64> platform_seq_overrides = 4;
 }
 
 message EvaluationJobResponse {
@@ -150,13 +178,18 @@ message GenerateSuiteCasesRequest {
 message UpdateDraftCaseRequest {
   // @binding: required,max=255
   string name = 1;
-  // @binding: required
+  // 语义同 EvaluationCaseRequest.input：单轮 case 必填（service 层校验），会话剧本
+  // case 可省略。原 binding required 移除，避免会话形态的 case 更新必须带无意义 input。
   google.protobuf.Value input = 2;
   // @binding: required
   google.protobuf.Value expected_output = 3;
   // @binding: required,oneof=exact contains regex judge
   string assertion_mode = 4;
   optional bool enabled = 5;
+  // 会话剧本（阶段 B §5.4）：随 draft case 编辑 full replacement——会话 case 的
+  // session 可改、单轮可转会话、会话可清空回单轮（nil 写回 '{}'）。与 judge_spec /
+  // tool_spec / step_judge 不同：后者是 case 入 draft 时的事实，编辑刻意不携带。
+  optional EvalSessionScript session = 6;
 }
 
 // ReviewItemDecisionRequest 人工评审结论（spec §9 回写状态机）。

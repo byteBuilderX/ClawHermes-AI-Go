@@ -176,3 +176,29 @@ func TestModelPolicyGovernanceMigration(t *testing.T) {
 		t.Fatal("down migration must drop platform audit table")
 	}
 }
+
+// TestPlatformGateEvalStateMigration 守护分层门禁 public 迁移 044：up 幂等加
+// eval_state 三列，down 幂等删除（与 038 的 ADD/DROP IF EXISTS 模式一致）。
+func TestPlatformGateEvalStateMigration(t *testing.T) {
+	t.Parallel()
+	up, err := os.ReadFile("sql/044_platform_gate_eval_state.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"eval_state TEXT NOT NULL DEFAULT 'unknown'",
+		"eval_state_updated_at TIMESTAMPTZ", "eval_state_updated_by TEXT NOT NULL DEFAULT ''"} {
+		if !strings.Contains(string(up), "ALTER TABLE public.platform_config_versions ADD COLUMN IF NOT EXISTS "+col) {
+			t.Fatalf("up migration missing idempotent ADD COLUMN IF NOT EXISTS %s", col)
+		}
+	}
+
+	down, err := os.ReadFile("sql/044_platform_gate_eval_state.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"eval_state_updated_by", "eval_state_updated_at", "eval_state"} {
+		if !strings.Contains(string(down), "ALTER TABLE public.platform_config_versions DROP COLUMN IF EXISTS "+col) {
+			t.Fatalf("down migration missing DROP COLUMN IF EXISTS %s", col)
+		}
+	}
+}

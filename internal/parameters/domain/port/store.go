@@ -35,7 +35,15 @@ type PlatformVersion struct {
 	BaseVersion *int64                     `json:"base_version_id,omitempty"`
 	Message     string                     `json:"message"`
 	CreatedBy   string                     `json:"created_by"`
-	CreatedAt   time.Time                  `json:"created_at"`
+	// CreatedByName 是 created_by 的可读名（display_name > github_login > 原文），
+	// ListVersions 时 LEFT JOIN public.users 现算；system/未知 uuid 无命中则回退原文。
+	CreatedByName string    `json:"created_by_name"`
+	CreatedAt     time.Time `json:"created_at"`
+	// EvalState 是平台门禁对该版本的评测结论（spec §4.1.1：unknown|sentinel_failed|
+	// sentinel_passed|anomaly_flag|anomaly_block|rollback_recommended|rollback_executed）。
+	// 044 迁移已建列，P2 只接读路径；写路径 UpdateEvalState 已存在。JSON tag 无
+	// omitempty：DB 列 NOT NULL，读回恒有值（未过门禁的历史行 = 'unknown'）。
+	EvalState string `json:"eval_state"`
 }
 
 // PlatformStore persists platform-scope parameter values in the public
@@ -74,4 +82,13 @@ type PlatformStore interface {
 	// first), including each version's immutable snapshot — the version history
 	// view and the diff against base_version_id both read from here.
 	ListVersions(ctx context.Context, groupKey string) ([]PlatformVersion, error)
+
+	// GetVersion returns one historical published version by group+version_seq
+	// (the gate writes eval_state onto a version the observation anchored to).
+	// Returns domain.ErrVersionNotFound when the version does not exist.
+	GetVersion(ctx context.Context, groupKey string, versionSeq int64) (PlatformVersion, error)
+	// UpdateEvalState records the gate's evaluation state on a version
+	// (e.g. "rollback_recommended"). Returns domain.ErrVersionNotFound when the
+	// version does not exist. eval_state_updated_at/by are stamped server-side.
+	UpdateEvalState(ctx context.Context, groupKey string, versionSeq int64, state, actor string) error
 }

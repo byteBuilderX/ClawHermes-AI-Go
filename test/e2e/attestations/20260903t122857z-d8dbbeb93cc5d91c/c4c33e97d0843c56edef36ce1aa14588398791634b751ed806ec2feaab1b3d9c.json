@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "source_digest": "c4c33e97d0843c56edef36ce1aa14588398791634b751ed806ec2feaab1b3d9c",
+  "manifest_digest": "c5b3ec299b7ae2f1d67ada9db6b3e6fbdc4a72fa015c9fef65fd58f5f0c7e5f2",
+  "policy_manifest_digest": "bdb04afb6259aae36d41f861039d5f4b476ed3e33aaa2e7a47cded0ba74f59ce",
+  "tested_git_parent": "872268a5aaf187f963175f50503205076163de48",
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "mode": "soak",
+  "acceptance_profile": "test",
+  "seed": 1,
+  "started_at": "2026-09-03T12:29:04.34Z",
+  "duration_seconds": 606,
+  "host_class": "developer",
+  "packs": [],
+  "capabilities": [],
+  "action_count": 37,
+  "sequence_digest": "661b5b2ad7e001430a1900d9dc05ba08a5cd5fb4398e6b9adf2e13a59170b312",
+  "evidence": {
+    "ui": 148,
+    "http": 111,
+    "database": 111,
+    "reconciled": 37
+  },
+  "artifacts": [],
+  "cleanup": {
+    "passed": true,
+    "residual_entity_ids": []
+  },
+  "unverified_capabilities": [],
+  "risk_classification": "soak",
+  "status": "passed",
+  "run_topology": {
+    "run_id": "20260903t122857z-d8dbbeb93cc5d91c",
+    "host": "127.0.0.1",
+    "ports": {
+      "backend": 36831,
+      "fixture": 40849,
+      "frontend": 43039,
+      "oauth": 45677
+    },
+    "database_name": "stratum_e2e_20260903t122857z_d8dbbeb93cc5d91c"
+  },
+  "owned_cleanup": {
+    "database_dropped": true,
+    "lease_removed": true
+  },
+  "expires_at": "2026-09-06T12:39:16.977986843Z"
+}

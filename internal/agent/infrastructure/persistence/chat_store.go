@@ -127,7 +127,7 @@ func (s *PgChatStore) ListConversations(ctx context.Context, tenantID, agentID, 
 			`SELECT id, agent_id, user_id, name, created_at, updated_at, expires_at
 			 FROM chat_conversations
 			 WHERE agent_id = $1 AND user_id = $2 AND expires_at > NOW() AND deleted_at IS NULL
-			   AND source <> 'workflow'
+			   AND source NOT IN ('workflow', 'evaluation')
 			 ORDER BY updated_at DESC`,
 			agentID, userID,
 		)
@@ -236,6 +236,13 @@ func (s *PgChatStore) AddMessage(ctx context.Context, tenantID string, msg *doma
 	if err != nil {
 		return fmt.Errorf("chat_store: encode artifacts: %w", err)
 	}
+	if msg.Sources == nil {
+		msg.Sources = []domain.RAGSearchSource{}
+	}
+	sourcesJSON, err := encodeSources(msg.Sources)
+	if err != nil {
+		return fmt.Errorf("chat_store: encode sources: %w", err)
+	}
 	var outboxQueued bool
 	var outboxSkipReason string
 	err = pgstore.ExecTenantWith(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -248,10 +255,10 @@ func (s *PgChatStore) AddMessage(ctx context.Context, tenantID string, msg *doma
 			return err
 		}
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO chat_messages (conversation_id, role, content, steps_json, is_error, artifacts_json, visibility, trace_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`INSERT INTO chat_messages (conversation_id, role, content, steps_json, is_error, artifacts_json, sources_json, visibility, trace_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			 RETURNING id, created_at`,
-			msg.ConversationID, msg.Role, msg.Content, string(msg.StepsJSON), msg.IsError, string(artifactsJSON), msg.Visibility, msg.TraceID,
+			msg.ConversationID, msg.Role, msg.Content, string(msg.StepsJSON), msg.IsError, string(artifactsJSON), string(sourcesJSON), msg.Visibility, msg.TraceID,
 		).Scan(&msg.ID, &msg.CreatedAt); err != nil {
 			return err
 		}
@@ -334,7 +341,7 @@ func (s *PgChatStore) ListMessages(ctx context.Context, tenantID, convID, userID
 	var out []*domain.ChatMessage
 	err := pgstore.ExecTenantWith(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT m.id, m.conversation_id, m.role, m.content, m.steps_json, m.is_error, m.created_at, m.artifacts_json, m.visibility
+			`SELECT m.id, m.conversation_id, m.role, m.content, m.steps_json, m.is_error, m.created_at, m.artifacts_json, m.sources_json, m.visibility
 			 FROM chat_messages m
 			 JOIN chat_conversations c ON c.id = m.conversation_id
 			 WHERE m.conversation_id = $1 AND c.user_id = $2 AND c.deleted_at IS NULL
@@ -348,14 +355,18 @@ func (s *PgChatStore) ListMessages(ctx context.Context, tenantID, convID, userID
 		defer rows.Close()
 		for rows.Next() {
 			var m domain.ChatMessage
-			var artifactsJSON []byte
+			var artifactsJSON, sourcesJSON []byte
 			if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
-				&m.StepsJSON, &m.IsError, &m.CreatedAt, &artifactsJSON, &m.Visibility); err != nil {
+				&m.StepsJSON, &m.IsError, &m.CreatedAt, &artifactsJSON, &sourcesJSON, &m.Visibility); err != nil {
 				return err
 			}
 			m.Artifacts, err = decodeExecutionArtifacts(artifactsJSON)
 			if err != nil {
 				return fmt.Errorf("decode message artifacts: %w", err)
+			}
+			m.Sources, err = decodeSources(sourcesJSON)
+			if err != nil {
+				return fmt.Errorf("decode message sources: %w", err)
 			}
 			out = append(out, &m)
 		}
@@ -365,6 +376,30 @@ func (s *PgChatStore) ListMessages(ctx context.Context, tenantID, convID, userID
 		return nil, fmt.Errorf("chat_store: list messages: %w", err)
 	}
 	return out, nil
+}
+
+// encodeSources serializes RAG citation sources into chat_messages.sources_json.
+func encodeSources(sources []domain.RAGSearchSource) ([]byte, error) {
+	if sources == nil {
+		sources = []domain.RAGSearchSource{}
+	}
+	return json.Marshal(sources)
+}
+
+// decodeSources restores persisted citation sources. Empty / null / absent all
+// map to an empty non-nil slice so history replay always yields [].
+func decodeSources(raw []byte) ([]domain.RAGSearchSource, error) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return []domain.RAGSearchSource{}, nil
+	}
+	var sources []domain.RAGSearchSource
+	if err := json.Unmarshal(raw, &sources); err != nil {
+		return nil, err
+	}
+	if sources == nil {
+		sources = []domain.RAGSearchSource{}
+	}
+	return sources, nil
 }
 
 func decodeExecutionArtifacts(raw []byte) ([]domain.ExecutionArtifact, error) {

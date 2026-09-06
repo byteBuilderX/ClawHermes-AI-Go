@@ -22,23 +22,29 @@ const testHistorySummaryPrompt = "Summarize this period of user history."
 func newTestSuperseder(client workers.TenantLLMClient) *workers.LLMSuperseder {
 	return workers.NewLLMSuperseder(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.supersede_prompt": testSupersedePrompt,
+		"memory.supersede_model":  testModel,
 	}})
 }
 
 func newResolvingTestSuperseder(tenantID string, resolver workers.TenantLLMResolver) *workers.LLMSuperseder {
 	return workers.NewResolvingLLMSuperseder(tenantID, resolver).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.supersede_prompt": testSupersedePrompt,
+		"memory.supersede_model":  testModel,
 	}})
 }
 
 func newTestHistorySummarizer(client workers.TenantLLMClient) *workers.LLMHistorySummarizer {
 	return workers.NewLLMHistorySummarizer(client).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.history_summary_prompt": testHistorySummaryPrompt,
+		"memory.history_summary_model":  testModel,
 	}})
 }
 
 func newResolvingTestHistorySummarizer(tenantID string, resolver workers.TenantLLMResolver) *workers.LLMHistorySummarizer {
 	return workers.NewResolvingLLMHistorySummarizer(tenantID, resolver).WithParamResolver(fakePlatformParamResolver{vals: map[string]any{
 		"memory.history_summary_prompt": testHistorySummaryPrompt,
+		"memory.history_summary_model":  testModel,
 	}})
 }
+
+const testModel = "test-model"

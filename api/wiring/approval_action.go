@@ -13,42 +13,71 @@ import (
 	evalport "github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
 	mcpapp "github.com/byteBuilderX/stratum/internal/mcp/application"
 	mcpdomain "github.com/byteBuilderX/stratum/internal/mcp/domain"
+	parametersapp "github.com/byteBuilderX/stratum/internal/parameters/application"
+	paramport "github.com/byteBuilderX/stratum/internal/parameters/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/constants"
+	"github.com/byteBuilderX/stratum/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// platformVersionOps 是审批执行器对 parameters public 版本操作的最小消费面
+// （consumer 定义窄接口；*parametersapp.Service 天然满足，见文件底部编译期断言）。
+// 平台参数是 public scope、无 tenant；Publish/Rollback 按行 PK id 寻址，Versions
+// 提供 id→seq 桥（E5）。窄接口使 wiring 单测可用 stub 注入 happy path。
+type platformVersionOps interface {
+	Publish(ctx context.Context, groupKey string, versionID int64, actor string) error
+	Rollback(ctx context.Context, groupKey string, versionID int64, actor string) error
+	Versions(ctx context.Context, groupKey string) ([]paramport.PlatformVersion, error)
+	UpdateEvalState(ctx context.Context, groupKey string, versionSeq int64, state, actor string) error
+}
 
 // approvalActionExecutor 把审批通过后的动作分发到对应 context 的 service
 // （wiring 薄 ACL，D3/D4/D5）。执行路径与 admin/owner 直接执行完全一致。
 type approvalActionExecutor struct {
-	suiteSvc        *evalapp.SuiteService
-	jobSvc          *evalapp.JobService
-	baselineSvc     *evalapp.BaselineService
-	experimentSvc   *evalapp.ExperimentService
-	optimizationSvc *evalapp.OptimizationService
-	casegen         *evalapp.TestCaseGenerator
-	candidateSvc    *evalapp.CandidateCommandService
-	agentApplier    evalport.AgentRevisionApplier
-	mcpSvc          *mcpapp.MCPService
-	logger          *zap.Logger
+	suiteSvc         *evalapp.SuiteService
+	jobSvc           *evalapp.JobService
+	baselineSvc      *evalapp.BaselineService
+	experimentSvc    *evalapp.ExperimentService
+	optimizationSvc  *evalapp.OptimizationService
+	casegen          *evalapp.TestCaseGenerator
+	candidateSvc     *evalapp.CandidateCommandService
+	agentApplier     evalport.AgentRevisionApplier
+	mcpSvc           *mcpapp.MCPService
+	paramSvc         platformVersionOps                // Task 4：平台版本操作（public；nil → 平台分支 fail closed）
+	resourceRollback evalport.ResourceRollbackExecutor // Task 4：L3 资源回滚（Task 3 装配的 ACL 适配器）
+	metrics          observability.MetricsProvider     // Task 4：门禁计数（auto_refused）
+	logger           *zap.Logger
 }
 
 // newApprovalActionExecutor 从已装配的 Evaluation / MCP 组件收集 service。
-// mcpComp 可为 nil（MCP 组件未装配时 executeMCPConfig fail closed）。
-func newApprovalActionExecutor(evalComp *Evaluation, mcpComp *MCP, logger *zap.Logger) *approvalActionExecutor {
+// mcpComp 可为 nil（MCP 组件未装配时 executeMCPConfig fail closed）；paramSvc /
+// resourceRollback 未装配时显式传 nil（对应分支 fail closed）。
+func newApprovalActionExecutor(
+	evalComp *Evaluation,
+	paramSvc platformVersionOps,
+	resourceRollback evalport.ResourceRollbackExecutor,
+	mcpComp *MCP,
+	metrics observability.MetricsProvider,
+	logger *zap.Logger,
+) *approvalActionExecutor {
 	var mcpSvc *mcpapp.MCPService
 	if mcpComp != nil {
 		mcpSvc = mcpComp.Service
 	}
 	return &approvalActionExecutor{
-		suiteSvc:        evalComp.SuiteService,
-		jobSvc:          evalComp.JobService,
-		baselineSvc:     evalComp.BaselineService,
-		experimentSvc:   evalComp.ExperimentService,
-		optimizationSvc: evalComp.OptimizationService,
-		casegen:         evalComp.TestCaseGenerator,
-		candidateSvc:    evalComp.CandidateService,
-		agentApplier:    evalComp.AgentRevisionApplier,
-		mcpSvc:          mcpSvc,
-		logger:          logger,
+		suiteSvc:         evalComp.SuiteService,
+		jobSvc:           evalComp.JobService,
+		baselineSvc:      evalComp.BaselineService,
+		experimentSvc:    evalComp.ExperimentService,
+		optimizationSvc:  evalComp.OptimizationService,
+		casegen:          evalComp.TestCaseGenerator,
+		candidateSvc:     evalComp.CandidateService,
+		agentApplier:     evalComp.AgentRevisionApplier,
+		mcpSvc:           mcpSvc,
+		paramSvc:         paramSvc,
+		resourceRollback: resourceRollback,
+		metrics:          metrics,
+		logger:           logger,
 	}
 }
 
@@ -72,17 +101,20 @@ type evaluationActionFunc func(ctx context.Context, e *approvalActionExecutor, r
 // evaluationOperations 把 operation 分派到独立方法——避免单一巨型 switch 突破
 // 圈复杂度/认知复杂度/行数门禁（各方法 CC≤2）。
 var evaluationOperations = map[string]evaluationActionFunc{
-	"create_suite":          executeCreateSuite,
-	"publish_suite":         executePublishSuite,
-	"generate_suite_cases":  executeGenerateSuiteCases,
-	"enqueue_run":           executeEnqueueRun,
-	"create_experiment":     executeCreateExperiment,
-	"pause_experiment":      executePauseExperiment,
-	"promote_experiment":    executePromoteExperiment,
-	"rollback_experiment":   executeRollbackExperiment,
-	"reject_candidate":      executeRejectCandidate,
-	"create_baseline":       executeCreateBaseline,
-	"generate_optimization": executeGenerateOptimization,
+	"create_suite":             executeCreateSuite,
+	"publish_suite":            executePublishSuite,
+	"generate_suite_cases":     executeGenerateSuiteCases,
+	"enqueue_run":              executeEnqueueRun,
+	"create_experiment":        executeCreateExperiment,
+	"pause_experiment":         executePauseExperiment,
+	"promote_experiment":       executePromoteExperiment,
+	"rollback_experiment":      executeRollbackExperiment,
+	"rollback_platform":        executePlatformRollback,
+	"rollback_resource":        executeResourceRollback,
+	"publish_platform_version": executePlatformPublishGated,
+	"reject_candidate":         executeRejectCandidate,
+	"create_baseline":          executeCreateBaseline,
+	"generate_optimization":    executeGenerateOptimization,
 }
 
 // executeEvaluation 按 operation 分发评测原方法，与 admin/owner 直接执行同一代码路径。
@@ -212,6 +244,121 @@ func executeRollbackExperiment(ctx context.Context, e *approvalActionExecutor, r
 		return nil, notExecuted(err)
 	}
 	return map[string]any{"status": "rolled_back"}, nil
+}
+
+// guardNoAutoRollback 实现 §3.4「无自动不变量」（L255）：平台 Scope 回滚执行器入口
+// 首行断言请求意图非 auto。auto 在编译/接线层面不存在（wiring 不提供平台 auto 分支），
+// Arguments 显式 auto=true 属策略违例：返回类型化 sentinel + auto_refused 计数。
+// 返回原始错误（终态 unknown_outcome 烧审批，不释放回 approved），避免非法意图在
+// 自动化循环里反复重试刷计数；正确 wiring 下恒不触发。
+func (e *approvalActionExecutor) guardNoAutoRollback(req port.ApprovalActionRequest) error {
+	if !asBool(req.Arguments, "auto") {
+		return nil
+	}
+	if e.metrics != nil {
+		e.metrics.IncEvalGateAction(constants.GateLayerL3Platform, constants.GateActionAutoRefused)
+	}
+	return evalport.ErrAutoRollbackForbidden
+}
+
+// executePlatformRollback 执行平台组人工回滚（rollback_platform，R26）：Arguments
+// group_key + version_id（行 PK id，与 HTTP path :versionID 同语义）。parameters
+// public scope、无 tenant；actor = 审批人 DecidedBy。单事务「错误=无副作用」→ 失败
+// notExecuted（审批释放回 approved 可重试）；auto 意图由 guardNoAutoRollback 拒绝。
+// 【跨任务：spec §3.4-3 平台回滚成功后的 EnqueueMultiTenantVerify 调用点延迟到 T13——本
+// Task 先于 Task 5 合入无法引用其交付函数，且生产仅 T13 审批流可达；见「开放问题 #2」。】
+func executePlatformRollback(ctx context.Context, e *approvalActionExecutor, req port.ApprovalActionRequest) (map[string]any, error) {
+	if err := e.guardNoAutoRollback(req); err != nil {
+		return nil, err
+	}
+	if e.paramSvc == nil {
+		return nil, notExecuted(fmt.Errorf("platform approval executor not configured"))
+	}
+	groupKey := asString(req.Arguments, "group_key")
+	versionID := int64(asInt(req.Arguments, "version_id"))
+	if groupKey == "" || versionID <= 0 {
+		return nil, notExecuted(fmt.Errorf("rollback_platform: group_key and version_id are required"))
+	}
+	if err := e.paramSvc.Rollback(ctx, groupKey, versionID, req.DecidedBy); err != nil {
+		return nil, notExecuted(err)
+	}
+	return map[string]any{"status": "rolled_back", "group_key": groupKey}, nil
+}
+
+// executeResourceRollback 执行 L3 资源人工回滚（rollback_resource，R26 → Task 3 executor）：
+// Arguments resource_kind + resource_id + target_revision_id（+可选 version_id）。目标
+// = 回滚到的上一好版本；resourceRollback 是 Task 3 装配的 ACL 适配器，按 Kind 分派
+// agent/knowledge/skill/experiment（mcp/未知 → ErrRollbackUnsupported）。各资源回滚单事务
+// 「错误=无副作用」→ 失败 notExecuted（含 ErrRollbackUnsupported）。actor/decidedBy =
+// 审批人（执行者代表审批人意志，与 executeRejectCandidate 同一 doctrine）；
+// approvalID 来源见「跨任务依赖」#2。
+func executeResourceRollback(ctx context.Context, e *approvalActionExecutor, req port.ApprovalActionRequest) (map[string]any, error) {
+	if e.resourceRollback == nil {
+		return nil, notExecuted(fmt.Errorf("resource rollback executor not configured"))
+	}
+	target := evaldomain.GateTarget{
+		Scope:      evaldomain.ScopeResource,
+		Kind:       asString(req.Arguments, "resource_kind"),
+		ResourceID: asString(req.Arguments, "resource_id"),
+		RevisionID: asString(req.Arguments, "target_revision_id"),
+		VersionSeq: int64(asInt(req.Arguments, "version_id")),
+	}
+	if target.Kind == "" || target.ResourceID == "" || target.RevisionID == "" {
+		return nil, notExecuted(fmt.Errorf("rollback_resource: resource_kind, resource_id and target_revision_id are required"))
+	}
+	if err := e.resourceRollback.Rollback(ctx, req.TenantID, target, req.DecidedBy, req.DecidedBy, ""); err != nil {
+		return nil, notExecuted(err)
+	}
+	return map[string]any{"status": "rolled_back", "kind": target.Kind, "resource_id": target.ResourceID}, nil
+}
+
+// executePlatformPublishGated 执行平台组人工发布（publish_platform_version，R26 → E5）：
+// Arguments group_key + version_id（行 PK id）。前置断言目标版本 eval_state ==
+// sentinel_passed（发布哨兵门：未过哨兵的版本禁止发布，fail-closed）；通过后
+// Service.Publish + 回写 eval_state=sentinel_passed（§3.4 事1：approve 后系统 actor 调
+// store.Publish + 写 eval_state）。单事务「错误=无副作用」→ 失败 notExecuted。
+// Task 4 落点无生产者（发布审批由 Task 5 哨兵流创建），本分支天然 fail-closed 待命至 Task 5。
+func executePlatformPublishGated(ctx context.Context, e *approvalActionExecutor, req port.ApprovalActionRequest) (map[string]any, error) {
+	if e.paramSvc == nil {
+		return nil, notExecuted(fmt.Errorf("platform approval executor not configured"))
+	}
+	groupKey := asString(req.Arguments, "group_key")
+	versionID := int64(asInt(req.Arguments, "version_id"))
+	if groupKey == "" || versionID <= 0 {
+		return nil, notExecuted(fmt.Errorf("publish_platform_version: group_key and version_id are required"))
+	}
+	versions, err := e.paramSvc.Versions(ctx, groupKey)
+	if err != nil {
+		return nil, notExecuted(err)
+	}
+	// version_id 是行 PK id，UpdateEvalState 按 version_seq 寻址 → 经 Versions() 做 id→seq 桥（E5）。
+	target := findPlatformVersionByID(versions, versionID)
+	if target == nil {
+		return nil, notExecuted(fmt.Errorf("publish_platform_version: version %d not found in group %q", versionID, groupKey))
+	}
+	if target.EvalState != constants.PlatformEvalStateSentinelPassed {
+		return nil, notExecuted(fmt.Errorf("publish_platform_version: version %d (seq %d) eval_state=%q, want %q",
+			versionID, target.VersionSeq, target.EvalState, constants.PlatformEvalStateSentinelPassed))
+	}
+	if err := e.paramSvc.Publish(ctx, groupKey, versionID, req.DecidedBy); err != nil {
+		return nil, notExecuted(err)
+	}
+	// 发布后保持状态标签（§3.4：approve 后写 eval_state=sentinel_passed）。
+	if err := e.paramSvc.UpdateEvalState(ctx, groupKey, int64(target.VersionSeq), constants.PlatformEvalStateSentinelPassed, req.DecidedBy); err != nil {
+		return nil, notExecuted(err)
+	}
+	return map[string]any{"status": "published", "group_key": groupKey, "version_seq": target.VersionSeq}, nil
+}
+
+// findPlatformVersionByID 按行 PK id 定位版本（id→seq 桥 E5）：Versions() 返回整组
+// 版本，UpdateEvalState/Publish 以行 id 或 seq 寻址需此映射。版本数小，线性扫描即可。
+func findPlatformVersionByID(versions []paramport.PlatformVersion, versionID int64) *paramport.PlatformVersion {
+	for i := range versions {
+		if versions[i].ID == versionID {
+			return &versions[i]
+		}
+	}
+	return nil
 }
 
 // executeRejectCandidate 执行者记为审批人（DecidedBy）：拒绝动作代表审批人意志。
@@ -459,3 +606,6 @@ func asBool(args map[string]any, key string) bool {
 	b, _ := args[key].(bool)
 	return b
 }
+
+// compile-time：parametersapp.Service 满足平台版本操作消费面（R27 wiring 注入具体类型）。
+var _ platformVersionOps = (*parametersapp.Service)(nil)

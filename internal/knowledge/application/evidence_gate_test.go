@@ -3,9 +3,12 @@ package application
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	knowledgeport "github.com/byteBuilderX/stratum/internal/knowledge/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/constants"
+	"github.com/byteBuilderX/stratum/pkg/observability"
 	"go.uber.org/zap"
 )
 
@@ -18,6 +21,21 @@ type stubSufficiencyJudge struct {
 func (s *stubSufficiencyJudge) JudgeSufficiency(_ context.Context, _, _, instructions string) (knowledgeport.SufficiencyVerdict, error) {
 	s.lastInstructions = instructions
 	return s.verdict, s.err
+}
+
+// judgeMetrics records judge/no-answer metric calls alongside NoopMetrics.
+type judgeMetrics struct {
+	observability.NoopMetrics
+	judge    []string // model:status
+	noAnswer []string // tenantID:reason
+}
+
+func (m *judgeMetrics) IncKnowledgeJudge(model, status string) {
+	m.judge = append(m.judge, model+":"+status)
+}
+
+func (m *judgeMetrics) IncNoAnswer(tenantID, reason string) {
+	m.noAnswer = append(m.noAnswer, tenantID+":"+reason)
 }
 
 func gateResult() *RAGQueryResult {
@@ -43,7 +61,7 @@ func TestJudgeSufficiencyGate(t *testing.T) {
 		wantReason NoAnswerReason
 	}{
 		{
-			name:       "nil judge 未装配 fail-closed 放行",
+			name:       "nil judge 未装配 fail-open 放行",
 			rs:         NewRAGService(nil, nil, zap.NewNop()),
 			wantAnswer: true,
 		},
@@ -59,7 +77,7 @@ func TestJudgeSufficiencyGate(t *testing.T) {
 			wantReason: NoAnswerInsufficientEvidence,
 		},
 		{
-			name:       "judge 失败降级放行",
+			name:       "judge 失败降级 fail-open 放行",
 			rs:         judge(&stubSufficiencyJudge{err: errors.New("timeout")}),
 			wantAnswer: true,
 		},
@@ -132,7 +150,7 @@ func TestJudgeSufficiencyGateModelAndResolverPaths(t *testing.T) {
 			t.Fatalf("empty model must pass through, got NoAnswer=%v", got.NoAnswer)
 		}
 	})
-	t.Run("resolver 失败 fail-closed 放行", func(t *testing.T) {
+	t.Run("resolver 失败 fail-open 放行", func(t *testing.T) {
 		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-max", "", gateResult())
 		if len(got.Sources) == 0 || got.NoAnswer != nil {
 			t.Fatalf("resolver failure must pass through, got NoAnswer=%v", got.NoAnswer)
@@ -142,6 +160,100 @@ func TestJudgeSufficiencyGateModelAndResolverPaths(t *testing.T) {
 		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
 		if len(got.Sources) != 0 || got.NoAnswer == nil || got.NoAnswer.Reason != NoAnswerInsufficientEvidence {
 			t.Fatalf("want insufficient_evidence, got sources=%d NoAnswer=%+v", len(got.Sources), got.NoAnswer)
+		}
+	})
+}
+
+// TestJudgeSufficiencyGateRecordsDegraded 断言 degraded 指标只在真实降级路径
+// （resolver 失败 / judge 未装配 / judge 调用失败）记录；gate 正常关闭（空
+// model）与正常判定不记 degraded（wiring 层才记 ok/error，本层不重复）。
+func TestJudgeSufficiencyGateRecordsDegraded(t *testing.T) {
+	gateSvc := func(resolve SufficiencyJudgeResolver) (*RAGService, *judgeMetrics) {
+		metrics := &judgeMetrics{}
+		rs := NewRAGService(nil, nil, zap.NewNop())
+		rs.SetMetrics(metrics)
+		rs.SetSufficiencyJudgeResolver(resolve)
+		return rs, metrics
+	}
+	healthy := func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+		return &stubSufficiencyJudge{verdict: knowledgeport.SufficiencySufficient}, nil
+	}
+	wantDegraded := []string{"qwen-turbo:degraded"}
+
+	t.Run("resolver 解析失败记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+			return nil, errors.New("model not in chat catalogue")
+		})
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
+		if got.NoAnswer != nil || len(got.Sources) == 0 {
+			t.Fatalf("resolver failure must pass through, got NoAnswer=%v", got.NoAnswer)
+		}
+		if !slices.Equal(m.judge, wantDegraded) {
+			t.Errorf("judge metric = %v, want %v", m.judge, wantDegraded)
+		}
+	})
+
+	t.Run("resolver 返回 nil judge 记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+			return nil, nil
+		})
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
+		if got.NoAnswer != nil || len(got.Sources) == 0 {
+			t.Fatalf("nil judge must pass through, got NoAnswer=%v", got.NoAnswer)
+		}
+		if !slices.Equal(m.judge, wantDegraded) {
+			t.Errorf("judge metric = %v, want %v", m.judge, wantDegraded)
+		}
+	})
+
+	t.Run("judge 调用失败记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+			return &stubSufficiencyJudge{err: errors.New("timeout")}, nil
+		})
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
+		if got.NoAnswer != nil || len(got.Sources) == 0 {
+			t.Fatalf("judge failure must pass through, got NoAnswer=%v", got.NoAnswer)
+		}
+		if !slices.Equal(m.judge, wantDegraded) {
+			t.Errorf("judge metric = %v, want %v", m.judge, wantDegraded)
+		}
+	})
+
+	t.Run("sufficient 判定不记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(healthy)
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
+		if got.NoAnswer != nil || len(got.Sources) == 0 {
+			t.Fatalf("sufficient verdict must pass through, got NoAnswer=%v", got.NoAnswer)
+		}
+		if len(m.judge) != 0 {
+			t.Errorf("no degraded expected on healthy path, got %v", m.judge)
+		}
+	})
+
+	t.Run("空 model 短路不记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(healthy)
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "", "", gateResult())
+		if got.NoAnswer != nil || len(got.Sources) == 0 {
+			t.Fatalf("empty model must pass through, got NoAnswer=%v", got.NoAnswer)
+		}
+		if len(m.judge) != 0 {
+			t.Errorf("no degraded expected when judge gate off, got %v", m.judge)
+		}
+	})
+
+	t.Run("insufficient 判定记 noAnswer 不记 degraded", func(t *testing.T) {
+		rs, m := gateSvc(func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+			return &stubSufficiencyJudge{verdict: knowledgeport.SufficiencyInsufficient}, nil
+		})
+		got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", gateResult())
+		if got.NoAnswer == nil || got.NoAnswer.Reason != NoAnswerInsufficientEvidence {
+			t.Fatalf("want insufficient_evidence, got NoAnswer=%+v", got.NoAnswer)
+		}
+		if len(m.judge) != 0 {
+			t.Errorf("no degraded expected on a real verdict, got %v", m.judge)
+		}
+		if want := []string{"tenant-1:" + constants.NoAnswerReasonInsufficientEvidence}; !slices.Equal(m.noAnswer, want) {
+			t.Errorf("noAnswer metric = %v, want %v", m.noAnswer, want)
 		}
 	})
 }

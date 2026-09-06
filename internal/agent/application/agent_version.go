@@ -28,6 +28,17 @@ type VersionDTO struct {
 	PublishedAt   string // RFC3339；未发布为空串
 	IsCurrent     bool
 	SafeSummary   map[string]any
+	// ParentVersionID 指向直父版本（版本创建时自链的前一最高 revision 行）；空串表示
+	// 首版。供前端「详情」Drawer 以父版本整份 payload 为 before 基线现算字段 diff。
+	ParentVersionID string
+}
+
+// VersionContentDTO 是单版本内容读接口的 wire shape：列表元数据 + 整份编辑面快照
+// payload（snake_case 键）。前端取点击版与其直父版两次内容，交给共享 Drawer 递归
+// diff 叶子字段。
+type VersionContentDTO struct {
+	VersionDTO
+	Payload map[string]any
 }
 
 // RollbackAgentInput carries the actor performing the rollback and the target
@@ -93,18 +104,52 @@ func versionToDTO(v versioningdomain.Version) VersionDTO {
 		publishedAt = v.PublishedAt.UTC().Format(time.RFC3339)
 	}
 	return VersionDTO{
-		ID:            v.ID,
-		VersionNo:     v.RevisionNo,
-		Status:        string(v.Status),
-		Source:        string(v.Source),
-		ContentHash:   v.ContentHash,
-		CreatedBy:     v.CreatedBy,
-		CreatedByName: v.CreatedByName,
-		CreatedAt:     v.CreatedAt.UTC().Format(time.RFC3339),
-		PublishedAt:   publishedAt,
-		IsCurrent:     v.IsCurrent,
-		SafeSummary:   v.SafeSummary,
+		ID:              v.ID,
+		VersionNo:       v.RevisionNo,
+		Status:          string(v.Status),
+		Source:          string(v.Source),
+		ContentHash:     v.ContentHash,
+		CreatedBy:       v.CreatedBy,
+		CreatedByName:   v.CreatedByName,
+		CreatedAt:       v.CreatedAt.UTC().Format(time.RFC3339),
+		PublishedAt:     publishedAt,
+		IsCurrent:       v.IsCurrent,
+		SafeSummary:     v.SafeSummary,
+		ParentVersionID: v.ParentVersionID,
 	}
+}
+
+// versionContentToDTO extends versionToDTO with the full edit-surface payload
+// snapshot (the agent config map persisted at version creation time).
+func versionContentToDTO(v versioningdomain.Version) VersionContentDTO {
+	return VersionContentDTO{
+		VersionDTO: versionToDTO(v),
+		Payload:    v.Payload,
+	}
+}
+
+// GetVersion returns one historical version's full content snapshot (metadata
+// + payload), which the frontend "detail" view diffs against the direct parent.
+// A missing/unknown version fails with versioningdomain.ErrVersionNotFound
+// (mapped 404); a missing assembly fails closed with a 500-class error.
+func (s *AgentService) GetVersion(ctx context.Context, id, versionID string) (VersionContentDTO, error) {
+	if s.deps.VersionRepo == nil {
+		return VersionContentDTO{}, fmt.Errorf("agent service get version: version repo not wired")
+	}
+	tenantID := reqctx.TenantIDFromContext(ctx)
+	v, found, err := s.deps.VersionRepo.GetVersion(ctx, tenantID, versioningdomain.ResourceKindAgent, id, versionID)
+	if err != nil {
+		return VersionContentDTO{}, fmt.Errorf("agent service get version: %w", err)
+	}
+	if !found {
+		return VersionContentDTO{}, versioningdomain.ErrVersionNotFound
+	}
+	// 单版本经 slice 解析展示名（resolveVersionNames 就地改元素），再映射 DTO。
+	one := []versioningdomain.Version{v}
+	if err := s.resolveVersionNames(ctx, one); err != nil {
+		return VersionContentDTO{}, err
+	}
+	return versionContentToDTO(one[0]), nil
 }
 
 // Rollback restores a deprecated product version of an agent. It rebuilds the

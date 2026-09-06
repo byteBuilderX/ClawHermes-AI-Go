@@ -197,6 +197,9 @@ func registerEvaluations(r *gin.Engine, c *wiring.Container, requireActive gin.H
 		// handler 内部在观测服务未装配时 fail closed 503（Task 12 wiring 注入）。
 		evaluations.GET("/observations", h.ListObservations)
 		evaluations.GET("/observations/:id", h.GetObservation)
+		// 评测指标监控（spec 2026-09-03 §4.2）：租户自有观测/评测聚合，member 可读。
+		evaluations.GET("/monitoring/resources", h.ListMonitorResources)
+		evaluations.GET("/monitoring/resources/trend", h.GetMonitorTrend)
 		// P1c 评审池：读对 member 放开；评审决策回写仍 requireAdmin。
 		evaluations.GET("/review", h.ListReviewItems)
 		evaluations.GET("/review/:id", h.GetReviewItem)
@@ -206,7 +209,15 @@ func registerEvaluations(r *gin.Engine, c *wiring.Container, requireActive gin.H
 		evaluations.POST("/suites", requireAdmin, requireActive, h.CreateSuite)
 		evaluations.POST("/suites/:id/publish", requireAdmin, requireActive, h.PublishSuite)
 		evaluations.POST("/suites/:id/generate", requireAdmin, requireActive, h.GenerateSuiteCases)
+		// S1-3 suite 管理页读写端点：读放开（member 只读展示版本/cases），
+		// 草稿开启/加删 case 是写操作 requireAdmin。
+		evaluations.GET("/suites/:id", requireActive, h.GetSuiteDetail)
 		evaluations.GET("/suites/:id/draft", requireActive, h.GetSuiteDraft)
+		evaluations.GET("/suites/:id/versions", requireActive, h.ListSuiteVersions)
+		evaluations.GET("/suites/:id/versions/:revisionId", requireActive, h.GetSuiteRevision)
+		evaluations.POST("/suites/:id/draft", requireAdmin, requireActive, h.StartNextDraft)
+		evaluations.POST("/suites/:id/draft/cases", requireAdmin, requireActive, h.AddDraftCase)
+		evaluations.DELETE("/suites/:id/draft/cases/:caseId", requireAdmin, requireActive, h.DeleteDraftCase)
 		evaluations.PUT("/suites/:id/draft/cases/:caseId", requireAdmin, requireActive, h.UpdateDraftCase)
 		evaluations.POST("/runs", requireAdmin, requireActive, h.EnqueueRun)
 		evaluations.GET("/runs/:id", h.GetRun)
@@ -348,15 +359,22 @@ func registerParameterReadRoutes(readGroup *gin.RouterGroup, c *wiring.Container
 
 // registerParameterWriteRoutes wires the unified parameter registry write
 // endpoints, which remain gated by the parent group's system_admin middleware.
+// R29/O2：Publish/Rollback 移动 production label（public 平台参数影响全租户），请求
+// 的 reqctx 宿主租户必须 = default(host) tenant：InjectTenantContext 由 auth.tenant_id
+// 填充 reqctx → RequireDefaultTenant 非 default 一律 403 fail-closed。
 func registerParameterWriteRoutes(adminGroup *gin.RouterGroup, c *wiring.Container) {
 	if c.Parameters == nil || c.Parameters.Service == nil {
 		return
 	}
 	paramHandler := handler.NewParameterHandler(c.Parameters.Service, c.Logger)
+	// Task 5 Sub-commit B：装配发布闸协调器 seam（wiring.PublishGateFunc → handler
+	// PublishGateFunc 显式转换）。nil（未装配/参数服务缺失）→ handler 保持裸发布语义。
+	paramHandler.SetPublishGate(handler.PublishGateFunc(c.PublishGate))
 	adminGroup.PUT("/parameters", paramHandler.Update)
 	adminGroup.POST("/parameters/versions/:groupKey", paramHandler.CreateDraft)
-	adminGroup.POST("/parameters/versions/:groupKey/:versionID/publish", paramHandler.Publish)
-	adminGroup.POST("/parameters/versions/:groupKey/:versionID/rollback", paramHandler.Rollback)
+	hostWrite := adminGroup.Group("", middleware.InjectTenantContext(), middleware.RequireDefaultTenant())
+	hostWrite.POST("/parameters/versions/:groupKey/:versionID/publish", paramHandler.Publish)
+	hostWrite.POST("/parameters/versions/:groupKey/:versionID/rollback", paramHandler.Rollback)
 }
 
 // dlqReplayAdapter 把 pipeline.ReplayService 适配到 handler 的消费方接口
@@ -531,6 +549,9 @@ func registerAgents(r *gin.Engine, c *wiring.Container, requireActive gin.Handle
 		// 版本历史/回滚：与 skill 语义一致——member 级，归属/白名单鉴权在 service
 		// ownership 矩阵内完成（owner/admin/creator/白名单 editor 放行，其余 ErrForbidden）。
 		agents.GET("/:id/versions", requireActive, agentHandler.ListAgentVersions)
+		// 单版本内容：返回该版整份 payload + safeSummary + parentVersionId，供「详情」
+		// Drawer 以其直父版本 payload 为基线现算字段前后值。
+		agents.GET("/:id/versions/:versionID", requireActive, agentHandler.GetAgentVersion)
 		agents.POST("/:id/rollback", requireActive, agentHandler.RollbackAgent)
 		agents.DELETE("/:id", requireAdmin, requireActive, agentHandler.DeleteAgent)
 		agents.POST("/:id/conversations", chatHandler.CreateConversation)
@@ -620,6 +641,8 @@ func registerKnowledge(r *gin.Engine, c *wiring.Container, requireActive gin.Han
 		// 版本历史/回滚：历史 GET member 级（对齐 agent/skill），回滚写 admin
 		// （spec：入口仅 isAdmin 可见）。
 		knowledgeGroup.GET("/workspaces/:name/versions", requireActive, ragHandler.ListWorkspaceVersions)
+		// 单版本内容 GET（member 级，同列表）：详情 Drawer 取点击版与直父版两次内容。
+		knowledgeGroup.GET("/workspaces/:name/versions/:versionID", requireActive, ragHandler.GetWorkspaceVersion)
 		knowledgeGroup.POST("/workspaces/:name/rollback", append(adminMW, requireActive, ragHandler.RollbackWorkspace)...)
 		knowledgeGroup.DELETE("/workspaces/:name", append(adminMW, requireActive, ragHandler.DeleteWorkspace)...)
 		knowledgeGroup.PUT("/workspaces/:name/editors", append(adminMW, requireActive, ragHandler.SetWorkspaceEditors)...)

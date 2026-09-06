@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default-unauth",
+    "method": "POST",
+    "path": "/agents/tool-approvals/:approvalID/cancel",
+    "body": {
+      "error": "missing bearer token"
+    },
+    "want_status": 401
+  }
+]

@@ -24,6 +24,9 @@ type WorkspaceVersionResponse struct {
 	PublishedAt   string         `json:"publishedAt"`
 	IsCurrent     bool           `json:"isCurrent"`
 	SafeSummary   map[string]any `json:"safeSummary"`
+	// ParentVersionID 指向直父版本 ID（首版为空串）；前端「详情」Drawer 以父版本
+	// 整份 payload 为 before 基线。与 AgentVersionResponse 对齐（spec §4.3）。
+	ParentVersionID string `json:"parentVersionId"`
 }
 
 // WorkspaceVersionsResponse wraps the version history list (newest first),
@@ -37,19 +40,37 @@ type RollbackWorkspaceRequest struct {
 	VersionID string `json:"versionId" binding:"required"`
 }
 
+// WorkspaceVersionContentResponse is the single-version content wire shape: the
+// list fields plus the full edit-surface payload snapshot (snake_case keys),
+// which the "detail" drawer diffs against the direct parent version's payload.
+// WorkspaceVersionResponse is embedded to keep both responses field-aligned.
+type WorkspaceVersionContentResponse struct {
+	WorkspaceVersionResponse
+	Payload map[string]any `json:"payload"`
+}
+
+// workspaceVersionContentToResponse extends workspaceVersionToResponse with payload.
+func workspaceVersionContentToResponse(v knowledge.WorkspaceVersionContentDTO) WorkspaceVersionContentResponse {
+	return WorkspaceVersionContentResponse{
+		WorkspaceVersionResponse: workspaceVersionToResponse(v.WorkspaceVersionDTO),
+		Payload:                  v.Payload,
+	}
+}
+
 // workspaceVersionToResponse maps the service-side DTO to the wire shape.
 func workspaceVersionToResponse(v knowledge.WorkspaceVersionDTO) WorkspaceVersionResponse {
 	return WorkspaceVersionResponse{
-		ID:            v.ID,
-		VersionNo:     v.VersionNo,
-		Status:        v.Status,
-		Source:        v.Source,
-		ContentHash:   v.ContentHash,
-		CreatedBy:     v.CreatedBy,
-		CreatedByName: v.CreatedByName,
-		CreatedAt:     v.CreatedAt,
-		PublishedAt:   v.PublishedAt,
-		IsCurrent:     v.IsCurrent,
-		SafeSummary:   v.SafeSummary,
+		ID:              v.ID,
+		VersionNo:       v.VersionNo,
+		Status:          v.Status,
+		Source:          v.Source,
+		ContentHash:     v.ContentHash,
+		CreatedBy:       v.CreatedBy,
+		CreatedByName:   v.CreatedByName,
+		CreatedAt:       v.CreatedAt,
+		PublishedAt:     v.PublishedAt,
+		IsCurrent:       v.IsCurrent,
+		SafeSummary:     v.SafeSummary,
+		ParentVersionID: v.ParentVersionID,
 	}
 }

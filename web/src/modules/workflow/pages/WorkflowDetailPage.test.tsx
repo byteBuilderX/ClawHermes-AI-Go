@@ -41,8 +41,8 @@ const definition = {
 };
 const versionsPage = {
   versions: [
-    { id: 'v2', definition_id: 'workflow-1', version: 2, name: '稳定版', description: '', created_at: '2026-07-24T00:00:00Z' },
-    { id: 'v1', definition_id: 'workflow-1', version: 1, name: '初版', description: '', created_at: '2026-07-23T00:00:00Z' },
+    { id: 'v2', definition_id: 'workflow-1', version: 2, name: '稳定版', description: '', created_by: 'u-2', created_by_name: '管理员', created_at: '2026-07-24T00:00:00Z' },
+    { id: 'v1', definition_id: 'workflow-1', version: 1, name: '初版', description: '', created_by: 'u-2', created_by_name: '管理员', created_at: '2026-07-23T00:00:00Z' },
   ],
   total: 2, page: 1, page_size: 100,
 };
@@ -51,6 +51,13 @@ const activeVersion = {
   spec: { nodes: [], edges: [], max_concurrency: 0 },
   input_schema: { task_label: '研究主题', task_description: '', fields: [] },
   created_at: '2026-07-24T00:00:00Z',
+};
+// v1 直父版本：description 与 v2 不同，作为「详情」Drawer 的基线（version_no-1）。
+const firstVersion = {
+  id: 'v1', definition_id: 'workflow-1', version: 1, name: '初版', description: '初版描述',
+  spec: { nodes: [], edges: [], max_concurrency: 0 },
+  input_schema: { task_label: '研究主题', task_description: '', fields: [] },
+  created_at: '2026-07-23T00:00:00Z',
 };
 
 const renderPage = () => render(
@@ -91,5 +98,30 @@ describe('WorkflowDetailPage', () => {
     await waitFor(() => expect(workflowApi.rollbackWorkflow).toHaveBeenCalledWith('workflow-1', 'v1'));
     // 回退后重新拉取定义与生效版本。
     await waitFor(() => expect(vi.mocked(workflowApi.getWorkflow).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('shows the publisher readable name in version history rows', async () => {
+    renderPage();
+    await screen.findByRole('region', { name: '工作流详情图' });
+    // 两行版本的「操作者」均展示服务端 join 出的可读名 created_by_name。
+    await waitFor(() => expect(screen.getAllByText('管理员')).toHaveLength(2));
+  });
+
+  it('opens the version detail drawer diffing against the previous version', async () => {
+    vi.mocked(workflowApi.getWorkflowVersion).mockImplementation(
+      async (_workflowId: string, versionId: string) => (versionId === 'v2' ? activeVersion : firstVersion),
+    );
+    renderPage();
+    await screen.findByRole('region', { name: '工作流详情图' });
+    // 首行 v2 的「详情」：baseline = 直父 v1。
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByText('版本 v2 字段变更')).toBeInTheDocument();
+    // v2 相对 v1 只改了 description；「变更前」列展示 v1 的旧值。
+    expect(within(drawer).getByText('初版描述')).toBeInTheDocument();
+    // onViewDetail 先取该版再取 version_no-1 的整份快照：末次拉取必须是基线 v1
+    // （初始 load 已拉过 v2 的生效版本）。
+    const fetchedVersions = vi.mocked(workflowApi.getWorkflowVersion).mock.calls.map((call) => call[1]);
+    expect(fetchedVersions[fetchedVersions.length - 1]).toBe('v1');
   });
 });

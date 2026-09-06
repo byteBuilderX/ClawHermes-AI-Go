@@ -99,8 +99,35 @@ const setAuthHeader = (config: AxiosRequestConfig, token: string | null) => {
   }
 };
 
+let _logoutHandler: LogoutHandler | null = null;
+let _refreshInFlight: Promise<string | null> | null = null;
+
+// refreshAccessToken 是 axios 与 SSE 共享的单飞刷新：并发 401（普通请求与流
+// 请求同帧过期）只触发一次 /auth/refresh，其余调用方复用同一 in-flight promise，
+// 避免 refresh token 轮换竞争（RT 单次消费）。成功写回 _tokenRef；失败触发登出
+// 回调并返回 null（会话确已失效，调用方向上抛原 401）。
+const refreshAccessToken = (): Promise<string | null> => {
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = api
+    .post<{ access_token: string }>('/auth/refresh')
+    .then((res) => {
+      const token = res.data.access_token;
+      _tokenRef.current = token;
+      return token;
+    })
+    .catch(() => {
+      _logoutHandler?.();
+      return null;
+    })
+    .finally(() => {
+      _refreshInFlight = null;
+    });
+  return _refreshInFlight;
+};
+
 export const setupApiInterceptors = (tokenRef: TokenRef, onLogout?: LogoutHandler): void => {
   _tokenRef = tokenRef;
+  _logoutHandler = onLogout ?? null;
 
   if (_reqInterceptor !== null) api.interceptors.request.eject(_reqInterceptor);
   if (_resInterceptor !== null) api.interceptors.response.eject(_resInterceptor);
@@ -129,15 +156,6 @@ export const setupApiInterceptors = (tokenRef: TokenRef, onLogout?: LogoutHandle
     (error) => Promise.reject(error),
   );
 
-  let isRefreshing = false;
-  type Pending = { resolve: (token: string | null) => void; reject: (err: unknown) => void };
-  let pendingQueue: Pending[] = [];
-
-  const processQueue = (error: unknown, token: string | null = null) => {
-    pendingQueue.forEach((p) => (error ? p.reject(error) : p.resolve(token)));
-    pendingQueue = [];
-  };
-
   _resInterceptor = api.interceptors.response.use(
     (response) => response,
     async (error) => {
@@ -152,32 +170,15 @@ export const setupApiInterceptors = (tokenRef: TokenRef, onLogout?: LogoutHandle
         !originalRequest._retry &&
         !originalRequest.url?.includes('/auth/refresh')
       ) {
-        if (isRefreshing) {
-          return new Promise<string | null>((resolve, reject) => {
-            pendingQueue.push({ resolve, reject });
-          }).then(() => {
-            setAuthHeader(originalRequest, null);
-            return api(originalRequest);
-          });
-        }
-
+        // 共享单飞刷新（与 SSE 流同一把锁）：并发 401 只触发一次 /auth/refresh，
+        // 刷新失败会话确已失效，登出回调由 refreshAccessToken 触发，此处原样上抛。
         originalRequest._retry = true;
-        isRefreshing = true;
-
-        try {
-          const res = await api.post<{ access_token: string }>('/auth/refresh');
-          const newToken = res.data.access_token;
-          _tokenRef.current = newToken;
-          processQueue(null, newToken);
-          setAuthHeader(originalRequest, null);
-          return api(originalRequest);
-        } catch (refreshError) {
-          processQueue(refreshError, null);
-          onLogout?.();
-          return Promise.reject(refreshError);
-        } finally {
-          isRefreshing = false;
+        const newToken = await refreshAccessToken();
+        if (newToken === null) {
+          return Promise.reject(error);
         }
+        setAuthHeader(originalRequest, null);
+        return api(originalRequest);
       }
 
       return Promise.reject(error);
@@ -231,6 +232,39 @@ const consumeSSE = async (
   }
 };
 
+// fetchStreamWithAuth 对 SSE 流请求发起 fetch，并在首个响应为 401 时触发一次
+// 共享单飞刷新后用新 token 重放。SSE 是长耗时请求，最容易跨过 access token
+// 生命周期；refresh 失败（会话确已失效）时返回原 401 响应，由调用方 onError
+// 处理——agent/workflow 消费方对 4xx 终止流、对 5xx/网络断线才重连，401 自愈
+// 只发生在 refresh cookie 仍有效时。
+type StreamFetchInit = (token: string | null) => RequestInit;
+
+const fetchStreamWithAuth = async (
+  path: string,
+  init: StreamFetchInit,
+  ctrl: AbortController,
+): Promise<Response> => {
+  if (!_authReady && !isPublicRequest(path)) {
+    try {
+      await waitWithTimeout(_authReadyPromise, AUTH_READY_TIMEOUT_MS);
+    } catch {
+      // fall through; backend 401 is handled as a normal stream error
+    }
+  }
+
+  const baseURL = api.defaults.baseURL || '';
+  let token: string | null = _tokenRef.current;
+  let response = await fetch(`${baseURL}${path}`, init(token));
+
+  if (response.status === 401 && !isPublicRequest(path) && !ctrl.signal.aborted) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed === null || ctrl.signal.aborted) return response;
+    token = refreshed;
+    response = await fetch(`${baseURL}${path}`, init(token));
+  }
+  return response;
+};
+
 export const streamApiEvents = (
   path: string,
   payload: unknown,
@@ -247,24 +281,21 @@ export const streamApiEvents = (
   const ctrl = new AbortController();
 
   const run = async (): Promise<void> => {
-    if (!_authReady && !isPublicRequest(path)) {
-      try {
-        await waitWithTimeout(_authReadyPromise, AUTH_READY_TIMEOUT_MS);
-      } catch {
-        // fall through; backend 401 is handled as a normal stream error
-      }
-    }
-
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (_tokenRef.current) headers.Authorization = `Bearer ${_tokenRef.current}`;
-
-    const response = await fetch(`${api.defaults.baseURL || ''}${path}`, {
-      method: 'POST',
-      headers,
-      credentials: 'include',
-      body: JSON.stringify(payload),
-      signal: ctrl.signal,
-    });
+    const response = await fetchStreamWithAuth(
+      path,
+      (token) => {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        return {
+          method: 'POST',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify(payload),
+          signal: ctrl.signal,
+        };
+      },
+      ctrl,
+    );
 
     if (!response.ok) throw await parseStreamError(response);
 
@@ -272,7 +303,8 @@ export const streamApiEvents = (
   };
 
   run().catch((err: Error) => {
-    if (err.name !== 'AbortError') onError(err);
+    // AbortError 或 abort 窗口内 refresh 返回的原 401：用户已取消流，静默。
+    if (err.name !== 'AbortError' && !ctrl.signal.aborted) onError(err);
   });
 
   return ctrl;
@@ -289,15 +321,18 @@ export const streamApiGet = (
 ): AbortController => {
   const ctrl = new AbortController();
   const run = async () => {
-    if (!_authReady && !isPublicRequest(path)) {
-      try { await waitWithTimeout(_authReadyPromise, AUTH_READY_TIMEOUT_MS); } catch { /* backend handles auth */ }
-    }
-    const headers: Record<string, string> = { Accept: 'text/event-stream' };
-    if (_tokenRef.current) headers.Authorization = `Bearer ${_tokenRef.current}`;
-    if (lastEventId) headers['Last-Event-ID'] = lastEventId;
-    const response = await fetch(`${api.defaults.baseURL || ''}${path}`, {
-      method: 'GET', headers, credentials: 'include', signal: ctrl.signal,
-    });
+    const response = await fetchStreamWithAuth(
+      path,
+      (token) => {
+        const headers: Record<string, string> = { Accept: 'text/event-stream' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        if (lastEventId) headers['Last-Event-ID'] = lastEventId;
+        return {
+          method: 'GET', headers, credentials: 'include', signal: ctrl.signal,
+        };
+      },
+      ctrl,
+    );
     if (!response.ok) throw await parseStreamError(response);
     await consumeSSE(response, ctrl, onEvent, onClose);
   };

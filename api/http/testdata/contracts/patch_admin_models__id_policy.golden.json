@@ -1,0 +1,11 @@
+[
+  {
+    "name": "authenticated-success",
+    "method": "PATCH",
+    "path": "/admin/models/contract-id/policy",
+    "want_status": 400,
+    "want_body": {
+      "error": "EOF"
+    }
+  }
+]

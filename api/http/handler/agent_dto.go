@@ -130,6 +130,9 @@ type AgentVersionResponse struct {
 	PublishedAt   string         `json:"publishedAt"`
 	IsCurrent     bool           `json:"isCurrent"`
 	SafeSummary   map[string]any `json:"safeSummary"`
+	// ParentVersionID 指向直父版本 ID（首版为空串）；前端「详情」Drawer 以父版本
+	// 整份 payload 为 before 基线。见 spec §4.3。
+	ParentVersionID string `json:"parentVersionId"`
 }
 
 // AgentVersionsResponse wraps the version history list (newest first),
@@ -146,17 +149,35 @@ type RollbackAgentRequest struct {
 // agentVersionToResponse maps the service-side VersionDTO to the wire shape.
 func agentVersionToResponse(v agent.VersionDTO) AgentVersionResponse {
 	return AgentVersionResponse{
-		ID:            v.ID,
-		VersionNo:     v.VersionNo,
-		Status:        v.Status,
-		Source:        v.Source,
-		ContentHash:   v.ContentHash,
-		CreatedBy:     v.CreatedBy,
-		CreatedByName: v.CreatedByName,
-		CreatedAt:     v.CreatedAt,
-		PublishedAt:   v.PublishedAt,
-		IsCurrent:     v.IsCurrent,
-		SafeSummary:   v.SafeSummary,
+		ID:              v.ID,
+		VersionNo:       v.VersionNo,
+		Status:          v.Status,
+		Source:          v.Source,
+		ContentHash:     v.ContentHash,
+		CreatedBy:       v.CreatedBy,
+		CreatedByName:   v.CreatedByName,
+		CreatedAt:       v.CreatedAt,
+		PublishedAt:     v.PublishedAt,
+		IsCurrent:       v.IsCurrent,
+		SafeSummary:     v.SafeSummary,
+		ParentVersionID: v.ParentVersionID,
+	}
+}
+
+// AgentVersionContentResponse is the single-version content wire shape: the
+// list fields plus the full edit-surface payload snapshot (snake_case keys),
+// which the "detail" drawer diffs against the direct parent version's payload.
+// AgentVersionResponse is embedded to keep both responses field-aligned.
+type AgentVersionContentResponse struct {
+	AgentVersionResponse
+	Payload map[string]any `json:"payload"`
+}
+
+// agentVersionContentToResponse extends agentVersionToResponse with payload.
+func agentVersionContentToResponse(v agent.VersionContentDTO) AgentVersionContentResponse {
+	return AgentVersionContentResponse{
+		AgentVersionResponse: agentVersionToResponse(v.VersionDTO),
+		Payload:              v.Payload,
 	}
 }
 

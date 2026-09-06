@@ -1,8 +1,8 @@
 # Agent Chat Flow
 
 > 当前事实基线：2026-07-22 工具权限 Harness 实现。路由入口见 `api/http/router.go`，执行与审批编排见
-> `internal/agent/application/agent_service.go`，ReAct 工具循环见
-> `internal/agent/application/graph/react.go`。
+> `internal/agent/application/agent_execution.go`（Execute/ExecuteStream/ResumeExecution），ReAct 工具循环见
+> `internal/agent/application/graph/react_tool.go` 等（与 react_llm.go、react_state.go 共同构成循环）。
 
 ## Platform Assistant Run
 

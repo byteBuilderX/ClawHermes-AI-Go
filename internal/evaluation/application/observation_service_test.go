@@ -745,3 +745,86 @@ func TestObservationServiceSampleCoverageJudgeFailureDropsRatio(t *testing.T) {
 		t.Fatalf("last sample coverage = %+v, want agent/0.0 (arrival counted, nothing saved)", last)
 	}
 }
+
+// stubGateSink 记录 HandleObservation 调用（观察 hook 用例）；err 非 nil 模拟门禁内部失败。
+type stubGateSink struct {
+	calls int
+	err   error
+}
+
+func (s *stubGateSink) HandleObservation(_ context.Context, _ string, _ domain.EvalObservation) error {
+	s.calls++
+	return s.err
+}
+
+func TestObservationServiceProcessGateNilSkips(t *testing.T) {
+	// Gate 未装配（nil）→ 门禁评估静默跳过（fail-open），观测照常落库。
+	repo := &stubObservationRepo{}
+	reader := &stubEvidenceReader{trace: port.ObservedTrace{TraceID: "trace-gate-nil", Input: "q", Output: "a"}}
+	judge := &stubJudge{enabled: true, result: domain.AssertionResult{Passed: true}}
+	svc := newTestObservationService(repo, reader, judge)
+	evt := domain.ObservationReferenceEvent{
+		TenantID: "t1", TraceID: "trace-gate-nil", ResourceKind: "agent", ResourceID: "agent-1",
+	}
+	if err := svc.Process(context.Background(), evt); err != nil {
+		t.Fatalf("Process with nil gate: %v", err)
+	}
+	if len(repo.saved) != 1 {
+		t.Fatalf("saved %d observations, want 1", len(repo.saved))
+	}
+}
+
+func TestObservationServiceProcessCallsGateSink(t *testing.T) {
+	// Gate 装配 + 正常 Process → handleGateObservation 触发一次 HandleObservation。
+	repo := &stubObservationRepo{}
+	reader := &stubEvidenceReader{trace: port.ObservedTrace{TraceID: "trace-gate", Input: "q", Output: "a"}}
+	judge := &stubJudge{enabled: true, result: domain.AssertionResult{Passed: true}}
+	gate := &stubGateSink{}
+	svc := NewObservationService(ObservationServiceDeps{
+		Enabled:    func(context.Context) bool { return true },
+		SampleRate: func(context.Context) float64 { return 1.0 },
+		Evidence:   reader, Judge: judge, Repo: repo,
+		Metrics: observability.NoopMetrics{}, Logger: zap.NewNop(),
+		Gate: gate,
+	})
+	evt := domain.ObservationReferenceEvent{
+		TenantID: "t1", TraceID: "trace-gate", ResourceKind: "agent", ResourceID: "agent-1",
+	}
+	if err := svc.Process(context.Background(), evt); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(repo.saved) != 1 {
+		t.Fatalf("saved %d observations, want 1", len(repo.saved))
+	}
+	if gate.calls != 1 {
+		t.Fatalf("gate sink calls = %d, want 1", gate.calls)
+	}
+}
+
+func TestObservationServiceProcessGateFailureDoesNotBlock(t *testing.T) {
+	// 门禁内部失败（Gate.HandleObservation 返回 err）→ fail-open：观测主流程
+	// 不阻断、不报错，观测照常落库（与 escalateToReview 同哲学）。
+	repo := &stubObservationRepo{}
+	reader := &stubEvidenceReader{trace: port.ObservedTrace{TraceID: "trace-gate-err", Input: "q", Output: "a"}}
+	judge := &stubJudge{enabled: true, result: domain.AssertionResult{Passed: true}}
+	gate := &stubGateSink{err: errors.New("gate down")}
+	svc := NewObservationService(ObservationServiceDeps{
+		Enabled:    func(context.Context) bool { return true },
+		SampleRate: func(context.Context) float64 { return 1.0 },
+		Evidence:   reader, Judge: judge, Repo: repo,
+		Metrics: observability.NoopMetrics{}, Logger: zap.NewNop(),
+		Gate: gate,
+	})
+	evt := domain.ObservationReferenceEvent{
+		TenantID: "t1", TraceID: "trace-gate-err", ResourceKind: "agent", ResourceID: "agent-1",
+	}
+	if err := svc.Process(context.Background(), evt); err != nil {
+		t.Fatalf("gate failure must not block observation: %v", err)
+	}
+	if len(repo.saved) != 1 {
+		t.Fatalf("saved %d observations, want 1", len(repo.saved))
+	}
+	if gate.calls != 1 {
+		t.Fatalf("gate sink calls = %d, want 1", gate.calls)
+	}
+}

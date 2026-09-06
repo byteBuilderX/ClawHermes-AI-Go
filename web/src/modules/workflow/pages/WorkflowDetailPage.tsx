@@ -10,7 +10,7 @@ import type { WorkflowDefinition, WorkflowVersion, WorkflowVersionSummary } from
 
 import { useTenantRole } from '@/modules/iam';
 import { extractErrorMessage } from '@/shared/lib';
-import { VersionHistory, type VersionRow } from '@/shared/ui';
+import { VersionHistory, type VersionDetail, type VersionRow } from '@/shared/ui';
 
 const { Paragraph, Title } = Typography;
 
@@ -53,6 +53,31 @@ export const WorkflowDetailPage = () => {
     try { await load(); } finally { setLoading(false); }
   };
 
+  // 「详情」素材：baseline = 直父版本 version_no-1（spec §4.5），after/before 各取
+  // {name,description,spec,input_schema} 整份快照，由共享 Drawer 现算叶子 JSONPath
+  // diff（spec.nodes[...] 级）。前一版不存在（首版）或缺失时 before 传空对象，全部视为新增。
+  const handleViewDetail = async (row: VersionRow): Promise<VersionDetail> => {
+    const afterVersion = await workflowApi.getWorkflowVersion(id, row.id);
+    const snapshot = (v: WorkflowVersion) => ({
+      name: v.name,
+      description: v.description,
+      spec: v.spec,
+      input_schema: v.input_schema,
+    });
+    const prevNo = (row.versionNo ?? 1) - 1;
+    const prev = versions.find((version) => version.version === prevNo);
+    let before: Record<string, unknown> = {};
+    if (prevNo >= 1 && prev) {
+      before = snapshot(await workflowApi.getWorkflowVersion(id, prev.id));
+    }
+    return {
+      title: `版本 v${row.versionNo ?? '—'} 字段变更`,
+      fieldLabels: { name: '名称', description: '描述', spec: '图定义', input_schema: '输入表单' },
+      before,
+      after: snapshot(afterVersion),
+    };
+  };
+
   if (loading) return <Skeleton active />;
   if (!definition) return <Empty description="没有找到这个工作流" />;
 
@@ -64,6 +89,8 @@ export const WorkflowDetailPage = () => {
     isCurrent: version.id === activeId,
     canRollback: isAdmin && version.id !== activeId,
     createdAt: version.created_at,
+    createdByName: version.created_by_name,
+    createdBy: version.created_by,
   }));
 
   return <section className="workflow-page-shell workflow-version-page">
@@ -85,6 +112,7 @@ export const WorkflowDetailPage = () => {
         rows={rows}
         loading={loading}
         rollback={isAdmin ? handleRollback : undefined}
+        onViewDetail={handleViewDetail}
         infoMessage={isAdmin ? '回滚到历史版本后立即生效，不产生新版本；历史保留可再次回滚。' : undefined}
       />
     </Card>

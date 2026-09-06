@@ -731,8 +731,8 @@ func (m *PrometheusMetrics) IncHermesEventProcessed(eventType, status string) {
 
 // --- Agent KPI (F3) ---
 
-func (m *PrometheusMetrics) IncAgentTaskCompleted(agentID, agentType, taskKind, outcome string) {
-	m.agentTaskCompletedTotal.WithLabelValues(agentID, agentType, taskKind, outcome, "").Inc()
+func (m *PrometheusMetrics) IncAgentTaskCompleted(agentID, agentType, taskKind, outcome, tenantID string) {
+	m.agentTaskCompletedTotal.WithLabelValues(agentID, agentType, taskKind, outcome, tenantID).Inc()
 }
 
 func (m *PrometheusMetrics) RecordAgentTaskLatency(agentID, taskKind string, seconds float64) {

@@ -285,11 +285,11 @@ func TestPgStore_DeleteDefinition_notFound(t *testing.T) {
 func TestPgStore_CreateVersion_success(t *testing.T) {
 	mock := newStoreMock(t)
 	store := &PgStore{pool: mock}
-	v := &domain.Version{ID: "v1", DefinitionID: "d1", Number: 2, Name: "n", Description: "d"}
+	v := &domain.Version{ID: "v1", DefinitionID: "d1", Number: 2, Name: "n", Description: "d", CreatedBy: "actor-1"}
 
 	beginTenantTx(mock)
 	mock.ExpectExec("INSERT INTO workflow_versions").
-		WithArgs("v1", "d1", int64(2), "n", "d", `{"nodes":null,"edges":null}`, `{"task_label":""}`).
+		WithArgs("v1", "d1", int64(2), "n", "d", "actor-1", `{"nodes":null,"edges":null}`, `{"task_label":""}`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
@@ -299,7 +299,7 @@ func TestPgStore_CreateVersion_success(t *testing.T) {
 
 var versionColumns = []string{
 	"id", "definition_id", "version_no", "name", "description",
-	"spec_json", "input_schema_json", "created_at",
+	"created_by", "spec_json", "input_schema_json", "created_at",
 }
 
 func TestPgStore_GetVersion_found(t *testing.T) {
@@ -310,7 +310,7 @@ func TestPgStore_GetVersion_found(t *testing.T) {
 	mock.ExpectQuery("FROM workflow_versions WHERE id=\\$1").
 		WithArgs("v1").
 		WillReturnRows(pgxmock.NewRows(versionColumns).AddRow(
-			"v1", "d1", int64(2), "n", "d", []byte(`{"nodes":[]}`), []byte(`{}`),
+			"v1", "d1", int64(2), "n", "d", "user-1", []byte(`{"nodes":[]}`), []byte(`{}`),
 			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		))
 	mock.ExpectCommit()
@@ -319,6 +319,7 @@ func TestPgStore_GetVersion_found(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, v)
 	require.Equal(t, int64(2), v.Number)
+	require.Equal(t, "user-1", v.CreatedBy)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -349,12 +350,12 @@ func TestPgStore_ListVersions_success(t *testing.T) {
 	mock.ExpectQuery("FROM workflow_versions WHERE definition_id=\\$1").
 		WithArgs("d1", 10, 0).
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "definition_id", "version_no", "name", "description", "created_at",
+			"id", "definition_id", "version_no", "name", "description", "created_by", "created_at",
 		}).AddRow(
-			"v2", "d1", int64(2), "n2", "d2",
+			"v2", "d1", int64(2), "n2", "d2", "user-a",
 			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		).AddRow(
-			"v1", "d1", int64(1), "n1", "d1",
+			"v1", "d1", int64(1), "n1", "d1", "user-b",
 			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		))
 	mock.ExpectCommit()
@@ -364,6 +365,8 @@ func TestPgStore_ListVersions_success(t *testing.T) {
 	require.Equal(t, 2, total)
 	require.Len(t, versions, 2)
 	require.Equal(t, "v2", versions[0].ID)
+	require.Equal(t, "user-a", versions[0].CreatedBy)
+	require.Equal(t, "user-b", versions[1].CreatedBy)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -400,7 +403,7 @@ func TestPgStore_CreateNextVersion_success(t *testing.T) {
 		WithArgs("d1").
 		WillReturnRows(pgxmock.NewRows([]string{"next"}).AddRow(int64(2)))
 	mock.ExpectExec("INSERT INTO workflow_versions").
-		WithArgs("v-new", "d1", int64(2), "n", "", `{"nodes":[{"id":"n1","type":"approval","agent_id":"","retry":{}}],"edges":null}`, `{"task_label":"task"}`).
+		WithArgs("v-new", "d1", int64(2), "n", "", "", `{"nodes":[{"id":"n1","type":"approval","agent_id":"","retry":{}}],"edges":null}`, `{"task_label":"task"}`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("UPDATE workflow_definitions SET active_version_id").
 		WithArgs("v-new", "d1").
@@ -411,6 +414,8 @@ func TestPgStore_CreateNextVersion_success(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, created)
 	require.Equal(t, int64(2), created.Number)
+	// ev=nil（非发布写路径/测试）→ created_by 保持 ''；publish 路径由 ev.ActorID 注入。
+	require.Empty(t, created.CreatedBy)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

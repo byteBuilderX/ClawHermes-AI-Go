@@ -14,5 +14,7 @@ export { ResponsiveDataView } from './ResponsiveDataView';
 export type { ResponsiveDataViewProps } from './ResponsiveDataView';
 export { SectionHeader } from './SectionHeader';
 export type { SectionHeaderProps } from './SectionHeader';
+export { VersionDiffDrawer } from './VersionDiffDrawer';
+export type { VersionDiffDrawerProps } from './VersionDiffDrawer';
 export { VersionHistory } from './VersionHistory';
-export type { VersionHistoryProps, VersionRow } from './VersionHistory';
+export type { VersionDetail, VersionHistoryProps, VersionRow } from './VersionHistory';

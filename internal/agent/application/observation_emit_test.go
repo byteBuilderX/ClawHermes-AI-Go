@@ -7,6 +7,7 @@ import (
 
 	"github.com/byteBuilderX/stratum/internal/agent/domain"
 	"github.com/byteBuilderX/stratum/internal/agent/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/observability"
 	"go.uber.org/zap"
 )
 
@@ -139,5 +140,33 @@ func TestEmitObservationBehaviorNilForCleanResult(t *testing.T) {
 	s.emitObservation(context.Background(), ExecMeta{TenantID: "t1"}, "agent-1", "exec-1", &AgentResult{Output: "ok", NoAnswer: &domain.NoAnswerInfo{}})
 	if emitter.last.Behavior != nil {
 		t.Fatalf("behavior = %v, want nil when no signals", emitter.last.Behavior)
+	}
+}
+
+func TestEmitObservationDisabledGuardHitStillYieldsRuleSignal(t *testing.T) {
+	emitter := &stubEmitter{}
+	s := newTestServiceWithEmitter(emitter)
+	blocks := &[]domain.RuleBlock{}
+	ctx := context.WithValue(context.Background(), ruleBlockCollectorKey{}, blocks)
+	g := NewRuleGuard(RuleGuardDeps{
+		Enabled:  func(context.Context) bool { return false },
+		Denylist: func(context.Context) []string { return []string{"danger_tool"} },
+		Metrics:  observability.NoopMetrics{},
+	})
+	if block, blocked := g.Check(ctx, "danger_tool"); blocked || block != nil {
+		t.Fatalf("disabled guard must not block, got blocked=%v block=%v", blocked, block)
+	}
+	if len(*blocks) != 1 {
+		t.Fatalf("collector len = %d, want 1（O4：disabled 命中恒填累积器）", len(*blocks))
+	}
+	s.emitObservation(ctx, ExecMeta{TenantID: "t1", TraceID: "trace-1"}, "agent-1", "exec-1", &AgentResult{Output: "ok"})
+	if emitter.called != 1 {
+		t.Fatalf("Emit called %d times, want 1", emitter.called)
+	}
+	if len(emitter.last.RuleSignals) != 1 {
+		t.Fatalf("rule_signals len = %d, want 1", len(emitter.last.RuleSignals))
+	}
+	if sig := emitter.last.RuleSignals[0]; sig.Rule != "tool_denylist" {
+		t.Fatalf("rule signal mismatch: %+v", sig)
 	}
 }

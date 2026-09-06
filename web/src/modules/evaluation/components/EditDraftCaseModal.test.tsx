@@ -28,6 +28,35 @@ describe('EditDraftCaseModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it('pre-fills and saves a session draft case with the full script preserved', async () => {
+    const onClose = vi.fn();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const sessionCase: EvaluationCase = {
+      id: 'c4', name: '退货退款会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,
+      session: {
+        goal: '处理用户的退货退款诉求',
+        turns: [
+          { user: '快递一直没更新', probe: '识别到退货意向' },
+          { user: '请帮我退款', tool_spec: { must_call: ['refund'], max_calls: 2 } },
+        ],
+      },
+    };
+    render(<EditDraftCaseModal open draft={sessionCase} onClose={onClose} onSubmit={onSubmit} />);
+
+    expect(screen.getByLabelText('会话目标')).toHaveValue('处理用户的退货退款诉求');
+    expect(screen.getByLabelText('第 1 轮用户消息')).toHaveValue('快递一直没更新');
+    expect(screen.getByLabelText('第 1 轮探针期望')).toHaveValue('识别到退货意向');
+    expect(screen.queryByLabelText('测试输入')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('会话目标'), { target: { value: '升级为优先处理' } });
+    fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      name: '退货退款会话', expectedOutput: '已受理退款', assertionMode: 'contains', enabled: true,
+      session: expect.objectContaining({ goal: '升级为优先处理' }),
+    })));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   it('explains that the judge spec is immutable when editing a judge case', () => {
     const judgeCase: EvaluationCase = { ...containsCase, name: '总结判定', assertion_mode: 'judge' };
     render(<EditDraftCaseModal open draft={judgeCase} onClose={vi.fn()} onSubmit={vi.fn()} />);

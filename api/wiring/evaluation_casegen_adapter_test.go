@@ -76,6 +76,16 @@ func (s *staticStore) ListVersions(_ context.Context, _ string) ([]port.Platform
 	return []port.PlatformVersion{}, nil
 }
 
+// GetVersion/UpdateEvalState 补齐接口（分层门禁 P1）：staticStore 只读且无版本
+// 历史，版本寻址恒 ErrVersionNotFound。
+func (s *staticStore) GetVersion(context.Context, string, int64) (port.PlatformVersion, error) {
+	return port.PlatformVersion{}, pdomain.ErrVersionNotFound
+}
+
+func (s *staticStore) UpdateEvalState(context.Context, string, int64, string, string) error {
+	return pdomain.ErrVersionNotFound
+}
+
 func caseGenSample() evalport.CaseGenRequest {
 	return evalport.CaseGenRequest{
 		ResourceKind: domain.ResourceKindSkill,

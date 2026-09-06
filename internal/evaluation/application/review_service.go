@@ -86,8 +86,10 @@ func (s *ReviewService) TryEscalateObservation(
 // result.Error==""（judge 实际产出）由调用方 runCase 保证。按 AssertionMode 分支：
 // judge case 走完整 TriggersForCaseResult（含 needs_review / low_confidence）；
 // 规则 case 仅走 TriggersForProcessConflict——规则 case 无 judge 信号，low_confidence
-// 不得误触发，needs_review 也仅对 judge 生效（spec §6.6）。resource_kind/resource_id
-// 归因取自 ref（与观测路径 obs.Resource 对齐），保证资源维度评审池过滤可用。
+// 不得误触发，needs_review 也仅对 judge 生效（spec §6.6）。会话轨迹判负
+// （result.Trajectory.Kind 为 stalled/drifted）在任何分支追加 trajectory_failed 强制
+// 入池（§4.5 盲点），不依赖逐轮信号是否命中。resource_kind/resource_id 归因取自 ref
+// （与观测路径 obs.Resource 对齐），保证资源维度评审池过滤可用。
 func (s *ReviewService) TryEscalateCaseResult(
 	ctx context.Context, tenantID, runID string, ref domain.ResourceRef,
 	result domain.EvalCaseResult, c domain.EvalCase, assertion domain.AssertionResult,
@@ -98,6 +100,12 @@ func (s *ReviewService) TryEscalateCaseResult(
 		triggers = domain.TriggersForCaseResult(c.NeedsReview, outputPass, processPass, assertion, s.deps.Cfg)
 	} else {
 		triggers = domain.TriggersForProcessConflict(outputPass, processPass)
+	}
+	// 会话容器级轨迹判负强制入池（spec 阶段 B §4.5 盲点）：stalled/drifted 是「整段
+	// 演化没走对」的负例——逐轮单看可能挑不出独立错误、也无其它触发——必须由人工
+	// 复核归因，与逐轮信号正交追加，不掩盖 needs_review/low_confidence 等原有原因。
+	if result.Trajectory != nil && result.Trajectory.Kind.Failed() {
+		triggers = append(triggers, domain.TriggerTrajectoryFailed)
 	}
 	if len(triggers) == 0 {
 		return nil
@@ -353,7 +361,8 @@ func observationSnapshot(obs *domain.EvalObservation) map[string]any {
 func caseSnapshot(result domain.EvalCaseResult, c domain.EvalCase, assertion domain.AssertionResult) map[string]any {
 	// actual 与 tool_sequence 入评审池快照前经 domain.SanitizeValue / SanitizeTools
 	// 脱敏，与 eval_case_results 读回一致（spec §6.5）：敏感 key 与键值对不落库不外泄。
-	return map[string]any{
+	// trajectory 是会话轨迹判负归因（§4.5）：评审员据此复核整段停滞/漂移，非敏感派生值。
+	snapshot := map[string]any{
 		"case_id":          c.ID,
 		"case_name":        c.Name,
 		"assertion_mode":   string(c.AssertionMode),
@@ -367,6 +376,10 @@ func caseSnapshot(result domain.EvalCaseResult, c domain.EvalCase, assertion dom
 		"process_failure":  result.ProcessFailure,
 		"tool_sequence":    domain.SanitizeTools(result.Tools),
 	}
+	if result.Trajectory != nil {
+		snapshot["trajectory"] = result.Trajectory
+	}
+	return snapshot
 }
 
 // snapshotSignals 提取评审条目快照里的 signals 对象（judge 误判校准样本数据源）。

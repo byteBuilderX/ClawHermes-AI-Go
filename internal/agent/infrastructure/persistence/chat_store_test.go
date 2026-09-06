@@ -80,6 +80,35 @@ func TestChatStore_ListConversations(t *testing.T) {
 	}
 }
 
+// TestChatStore_ListConversations_FiltersOutWorkflowAndEvaluation 显式断言默认会话列表
+// 同时过滤 workflow 与 evaluation 两类非手动来源：评测受控会话（source=evaluation）
+// 与工作流自动会话都不应出现在生产默认会话列表，SQL 必须带
+// source NOT IN ('workflow', 'evaluation')。
+func TestChatStore_ListConversations_FiltersOutWorkflowAndEvaluation(t *testing.T) {
+	store, mock := newChatStoreWithMock(t)
+	defer mock.Close()
+
+	now := time.Now()
+	expectTenantTx(mock)
+	mock.ExpectQuery(`AND source NOT IN \('workflow', 'evaluation'\)`).
+		WithArgs("agent-1", "user-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "agent_id", "user_id", "name", "created_at", "updated_at", "expires_at",
+		}).AddRow("c1", "agent-1", "user-1", "Chat A", now, now, now.AddDate(0, 0, 30)))
+	mock.ExpectCommit()
+
+	convs, err := store.ListConversations(context.Background(), "t1", "agent-1", "user-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Errorf("want 1 conversation, got %d", len(convs))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet: %v", err)
+	}
+}
+
 func TestChatStore_RenameConversation_success(t *testing.T) {
 	store, mock := newChatStoreWithMock(t)
 	defer mock.Close()
@@ -174,7 +203,7 @@ func TestChatStore_AddMessage(t *testing.T) {
 		WithArgs("conv-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery("INSERT INTO chat_messages").
-		WithArgs("conv-1", "user", "hello", string(steps), false, "[]", "user", "trace-1").
+		WithArgs("conv-1", "user", "hello", string(steps), false, "[]", "[]", "user", "trace-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow("msg-uuid", now))
 	mock.ExpectCommit()
 
@@ -207,7 +236,7 @@ func TestChatStore_AddMessage_nilStepsDefaultsToEmpty(t *testing.T) {
 		WithArgs("conv-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery("INSERT INTO chat_messages").
-		WithArgs("conv-1", "user", "hi", "[]", false, "[]", "user", "trace-2").
+		WithArgs("conv-1", "user", "hi", "[]", false, "[]", "[]", "user", "trace-2").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow("msg-2", now))
 	mock.ExpectCommit()
 
@@ -228,10 +257,10 @@ func TestChatStore_ListMessages(t *testing.T) {
 	mock.ExpectQuery("SELECT m.id, m.conversation_id").
 		WithArgs("conv-1", "user-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "visibility",
+			"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "sources_json", "visibility",
 		}).
-			AddRow("m1", "conv-1", "user", "hi", json.RawMessage("[]"), false, now, json.RawMessage("[]"), "user").
-			AddRow("m2", "conv-1", "assistant", "hello back", json.RawMessage("[]"), false, now, json.RawMessage("[]"), "user"))
+			AddRow("m1", "conv-1", "user", "hi", json.RawMessage("[]"), false, now, json.RawMessage("[]"), json.RawMessage("[]"), "user").
+			AddRow("m2", "conv-1", "assistant", "hello back", json.RawMessage("[]"), false, now, json.RawMessage("[]"), json.RawMessage("[]"), "user"))
 	mock.ExpectCommit()
 
 	msgs, err := store.ListMessages(context.Background(), "t1", "conv-1", "user-1")
@@ -261,7 +290,7 @@ func TestChatStore_ArtifactRoundTrip(t *testing.T) {
 	msg := &domain.ChatMessage{ConversationID: "conv-1", Role: "assistant", Content: "ok", Artifacts: artifacts}
 	expectTenantTx(mock)
 	mock.ExpectExec("UPDATE chat_conversations").WithArgs("conv-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectQuery("INSERT INTO chat_messages").WithArgs("conv-1", "assistant", "ok", "[]", false, string(raw), "user", "").
+	mock.ExpectQuery("INSERT INTO chat_messages").WithArgs("conv-1", "assistant", "ok", "[]", false, string(raw), "[]", "user", "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow("m1", now))
 	mock.ExpectCommit()
 	if err := store.AddMessage(context.Background(), "t1", msg); err != nil {
@@ -270,8 +299,8 @@ func TestChatStore_ArtifactRoundTrip(t *testing.T) {
 
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT m.id, m.conversation_id").WithArgs("conv-1", "user-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "visibility"}).
-			AddRow("m1", "conv-1", "assistant", "ok", json.RawMessage("[]"), false, now, raw, "user"))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "sources_json", "visibility"}).
+			AddRow("m1", "conv-1", "assistant", "ok", json.RawMessage("[]"), false, now, raw, json.RawMessage("[]"), "user"))
 	mock.ExpectCommit()
 	got, err := store.ListMessages(context.Background(), "t1", "conv-1", "user-1")
 	if err != nil {
@@ -327,8 +356,8 @@ func TestChatStore_HistoricalMessageHydratesEmptyArtifacts(t *testing.T) {
 	now := time.Now()
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT m.id, m.conversation_id").WithArgs("conv-1", "user-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "visibility"}).
-			AddRow("m1", "conv-1", "assistant", "old", json.RawMessage("[]"), false, now, json.RawMessage("[]"), "user"))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "sources_json", "visibility"}).
+			AddRow("m1", "conv-1", "assistant", "old", json.RawMessage("[]"), false, now, json.RawMessage("[]"), json.RawMessage("[]"), "user"))
 	mock.ExpectCommit()
 	got, err := store.ListMessages(context.Background(), "t1", "conv-1", "user-1")
 	if err != nil {
@@ -345,8 +374,8 @@ func TestChatStore_MalformedArtifactsReturnError(t *testing.T) {
 	now := time.Now()
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT m.id, m.conversation_id").WithArgs("conv-1", "user-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "visibility"}).
-			AddRow("m1", "conv-1", "assistant", "bad", json.RawMessage("[]"), false, now, []byte("not-json"), "user"))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "sources_json", "visibility"}).
+			AddRow("m1", "conv-1", "assistant", "bad", json.RawMessage("[]"), false, now, []byte("not-json"), json.RawMessage("[]"), "user"))
 	mock.ExpectRollback()
 	_, err := store.ListMessages(context.Background(), "t1", "conv-1", "user-1")
 	if err == nil {
@@ -514,5 +543,85 @@ func TestChatStore_ValidTenantIDPassesUnifiedValidation(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet: %v", err)
+	}
+}
+
+func TestDecodeSources(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		wantLen   int
+		wantErr   bool
+		wantTitle string // 非空时额外断言首条来源的 DocumentTitle 已从 camelCase 字段解码
+	}{
+		{name: "empty", raw: "", wantLen: 0},
+		{name: "null is empty slice", raw: "null", wantLen: 0},
+		{name: "empty array", raw: "[]", wantLen: 0},
+		{name: "camelCase round trip", raw: `[{"workspaceId":"ws-1","workspaceName":"产品库","chunkId":"c-1","documentId":"doc-1","documentTitle":"用户手册.pdf","snippet":"s","score":0.91,"hasScore":true}]`, wantLen: 1, wantTitle: "用户手册.pdf"},
+		{name: "malformed", raw: `{`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeSources([]byte(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got %#v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tc.wantLen {
+				t.Fatalf("want %d sources, got %d (%#v)", tc.wantLen, len(got), got)
+			}
+			if got == nil {
+				t.Fatal("decodeSources must return non-nil slice")
+			}
+			if tc.wantTitle != "" && got[0].DocumentTitle != tc.wantTitle {
+				t.Fatalf("want camelCase DocumentTitle %q decoded, got %#v", tc.wantTitle, got[0])
+			}
+		})
+	}
+}
+
+func TestChatStore_SourcesRoundTrip(t *testing.T) {
+	store, mock := newChatStoreWithMock(t)
+	defer mock.Close()
+	now := time.Now()
+	sources := []domain.RAGSearchSource{{
+		WorkspaceID: "ws-1", WorkspaceName: "产品知识库", ChunkID: "chunk-1",
+		DocumentID: "doc-1", DocumentTitle: "用户手册.pdf", Snippet: "s",
+		Score: 0.91, HasScore: true,
+	}}
+	raw, err := encodeSources(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &domain.ChatMessage{
+		ConversationID: "conv-1", Role: "assistant", Content: "ok",
+		Sources: sources, TraceID: "trace-rt",
+	}
+
+	expectTenantTx(mock)
+	mock.ExpectExec("UPDATE chat_conversations").WithArgs("conv-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery("INSERT INTO chat_messages").WithArgs("conv-1", "assistant", "ok", "[]", false, "[]", string(raw), "user", "trace-rt").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow("m1", now))
+	mock.ExpectCommit()
+	if err := store.AddMessage(context.Background(), "t1", msg); err != nil {
+		t.Fatal(err)
+	}
+
+	expectTenantTx(mock)
+	mock.ExpectQuery("SELECT m.id, m.conversation_id").WithArgs("conv-1", "user-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "conversation_id", "role", "content", "steps_json", "is_error", "created_at", "artifacts_json", "sources_json", "visibility"}).
+			AddRow("m1", "conv-1", "assistant", "ok", json.RawMessage("[]"), false, now, json.RawMessage("[]"), raw, "user"))
+	mock.ExpectCommit()
+	got, err := store.ListMessages(context.Background(), "t1", "conv-1", "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Sources) != 1 || got[0].Sources[0].DocumentTitle != "用户手册.pdf" || got[0].Sources[0].HasScore != true {
+		t.Fatalf("unexpected sources: %#v", got[0].Sources)
 	}
 }

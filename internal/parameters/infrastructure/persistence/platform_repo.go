@@ -409,11 +409,15 @@ func (r *PlatformRepository) ListVersions(
 	ctx context.Context,
 	groupKey string,
 ) ([]port.PlatformVersion, error) {
+	// created_by_name 由 LEFT JOIN public.users 现算（display_name > github_login >
+	// 原文），与 iam actor_name_resolver 同语义；system/未知 uuid 无命中则回退原文。
 	rows, err := r.pool.Query(ctx,
-		`SELECT v.id, v.group_key, v.version_seq, v.status, v.snapshot, v.base_version_id,
+		`SELECT v.id, v.group_key, v.version_seq, v.status, v.eval_state, v.snapshot, v.base_version_id,
 		        v.message, v.created_by, v.created_at,
-		        (prod.version_id IS NOT NULL) AS is_current
+		        (prod.version_id IS NOT NULL) AS is_current,
+		        COALESCE(u.display_name, u.github_login, v.created_by) AS created_by_name
 		 FROM public.platform_config_versions v
+		 LEFT JOIN public.users u ON u.id::text = v.created_by
 		 LEFT JOIN public.platform_config_labels prod
 		   ON prod.group_key = v.group_key AND prod.label = 'production' AND prod.version_id = v.id
 		 WHERE v.group_key = $1
@@ -433,7 +437,8 @@ func (r *PlatformRepository) ListVersions(
 			base      *int64
 			createdAt time.Time
 		)
-		if err := rows.Scan(&v.ID, &v.GroupKey, &v.VersionSeq, &v.Status, &snapshot, &base, &v.Message, &v.CreatedBy, &createdAt, &v.IsCurrent); err != nil {
+		if err := rows.Scan(&v.ID, &v.GroupKey, &v.VersionSeq, &v.Status, &v.EvalState,
+			&snapshot, &base, &v.Message, &v.CreatedBy, &createdAt, &v.IsCurrent, &v.CreatedByName); err != nil {
 			return nil, fmt.Errorf("platform repository: scan version: %w", err)
 		}
 		if err := json.Unmarshal(snapshot, &v.Snapshot); err != nil {
@@ -447,6 +452,60 @@ func (r *PlatformRepository) ListVersions(
 		return nil, fmt.Errorf("platform repository: list versions %s: rows iteration: %w", groupKey, err)
 	}
 	return out, nil
+}
+
+// GetVersion 读一个历史版本的元数据（门禁写 eval_state 前校验存在性 / 取 seq 用）。
+// 按 group_key + version_seq 寻址；命中 0 行 → ErrVersionNotFound。
+func (r *PlatformRepository) GetVersion(
+	ctx context.Context,
+	groupKey string,
+	versionSeq int64,
+) (port.PlatformVersion, error) {
+	const q = `SELECT id, group_key, version_seq, status, eval_state, snapshot
+		FROM public.platform_config_versions WHERE group_key = $1 AND version_seq = $2`
+	var (
+		v        port.PlatformVersion
+		snapshot []byte
+	)
+	if err := r.pool.QueryRow(ctx, q, groupKey, versionSeq).
+		Scan(&v.ID, &v.GroupKey, &v.VersionSeq, &v.Status, &v.EvalState, &snapshot); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return port.PlatformVersion{}, domain.ErrVersionNotFound
+		}
+		return port.PlatformVersion{}, fmt.Errorf("get platform version %s seq %d: %w", groupKey, versionSeq, err)
+	}
+	if len(snapshot) > 0 {
+		if err := json.Unmarshal(snapshot, &v.Snapshot); err != nil {
+			return port.PlatformVersion{}, fmt.Errorf(
+				"get platform version %s seq %d: decode snapshot: %w", groupKey, versionSeq, err)
+		}
+	}
+	return v, nil
+}
+
+// UpdateEvalState 写门禁状态（分层门禁 P1）：命中 0 行说明版本不存在 → ErrVersionNotFound。
+// 注入的 pool 无 Exec，沿用 SetValue 的 QueryRow+RETURNING 单语句写模式；eval_state 三列
+// （eval_state/eval_state_updated_at/eval_state_updated_by）由 044 迁移提供。
+func (r *PlatformRepository) UpdateEvalState(
+	ctx context.Context,
+	groupKey string,
+	versionSeq int64,
+	state, actor string,
+) error {
+	err := r.pool.QueryRow(ctx,
+		`UPDATE public.platform_config_versions
+		 SET eval_state = $3, eval_state_updated_at = NOW(), eval_state_updated_by = $4
+		 WHERE group_key = $1 AND version_seq = $2
+		 RETURNING group_key`,
+		groupKey, versionSeq, state, actor,
+	).Scan(new(string))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrVersionNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("update platform version %s seq %d eval_state: %w", groupKey, versionSeq, err)
+	}
+	return nil
 }
 
 // lockGroup serializes all per-group version/label operations on one FOR

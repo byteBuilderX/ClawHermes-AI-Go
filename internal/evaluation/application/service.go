@@ -208,6 +208,11 @@ func (s *Service) resolvePlatformSeq(ctx context.Context, tenantID string) int64
 func (s *Service) runCase(
 	ctx context.Context, tenantID, requestedBy string, ref domain.ResourceRef, runID string, testCase domain.EvalCase,
 ) domain.EvalCaseResult {
+	// 会话剧本 case（阶段 B §5.4）：adapter 实现 SessionRunner 才可执行，否则
+	// runCaseSession 内部 fail-close。nil Session 的单轮 case 走下方既有路径零改动。
+	if testCase.IsSession() {
+		return s.runCaseSession(ctx, tenantID, requestedBy, ref, runID, testCase)
+	}
 	execution, err := s.adapter.ExecuteRevision(ctx, tenantID, requestedBy, ref, testCase)
 	result := domain.EvalCaseResult{ID: uuid.Must(uuid.NewV7()).String(), CaseID: testCase.ID}
 	if err != nil {
@@ -259,6 +264,77 @@ func (s *Service) runCase(
 	return s.ruleCaseResult(ctx, tenantID, runID, ref, testCase, execution.Output, result)
 }
 
+// runCaseSession 执行会话剧本 case（阶段 B §5.4）：adapter 必须是 port.SessionRunner，
+// 否则 fail-close 报错（绝不静默退化为单轮）；剧本结构非法（Validate 不过）同样
+// fail-close，在驱动适配器开受控会话前即拒绝。RunSession 逐轮驱动执行并返回每轮
+// 证据；任一轮失败保留已收集 partial evidence 并返回 error。终态断言复用单轮既有
+// 规则/judge 分支（actual=末轮输出，零断言复制）；case 级过程断言作用于末轮工具
+// 序列。TraceID 取末轮（逐轮 trace 已留在 Turns 证据里）；Tokens/CostUSD/DurationMs
+// 聚合为逐轮之和（成败均计：partial evidence 的消耗如实入 case 级成本），run 级
+// Metrics 自然汇总整段会话消耗。
+func (s *Service) runCaseSession(
+	ctx context.Context, tenantID, requestedBy string, ref domain.ResourceRef, runID string,
+	testCase domain.EvalCase,
+) domain.EvalCaseResult {
+	result := domain.EvalCaseResult{ID: uuid.Must(uuid.NewV7()).String(), CaseID: testCase.ID}
+	runner, ok := s.adapter.(port.SessionRunner)
+	if !ok {
+		result.Error = "session evaluation not supported by this resource adapter"
+		result.FailureReason = "execution"
+		return result
+	}
+	// 剧本结构 preflight：非法剧本（零轮/空 user）在 RunSession 开 source='evaluation'
+	// 会话前即拒绝，不浪费一次受控会话。归因 execution 与其它「会话无法执行」路径
+	// 一致（FailureReason 语义集无独立 config 枚举）。
+	if reason, valid := testCase.Session.Validate(); !valid {
+		result.Error = reason
+		result.FailureReason = "execution"
+		return result
+	}
+	evidences, err := runner.RunSession(ctx, tenantID, requestedBy, ref, *testCase.Session)
+	result.Turns = evidences
+	// 逐轮消耗无论成败都聚合：中途失败带回 partial evidence 时 case/run 级
+	// tokens/cost/duration 如实反映真实消耗，避免 Turns 内为真实值而 case 级记 0。
+	for _, e := range evidences {
+		result.Tokens += e.Tokens
+		result.CostUSD += e.CostUSD
+		result.DurationMs += e.DurationMs
+	}
+	if err != nil {
+		result.Error = err.Error()
+		result.FailureReason = "execution"
+		return result
+	}
+	if len(evidences) == 0 {
+		result.Error = "session evaluation returned no turn evidence"
+		result.FailureReason = "execution"
+		return result
+	}
+	last := evidences[len(evidences)-1]
+	result.Actual = last.Output
+	result.TraceID = last.TraceID
+	result.Tools = last.Tools
+	verdict, err := s.evaluateProcess(ctx, testCase, result)
+	if err != nil {
+		result.Error = err.Error()
+		result.FailureReason = "execution"
+		return result
+	}
+	result.ProcessPass = verdict.Passed
+	result.ProcessFailure = verdict.Failure
+	result.Dimensions = verdict.Dimensions
+	// 演化轨迹判据（阶段 B §4.2）：判定会话是否收敛/停滞/漂移，归因整段演化形态。
+	// 纯函数确定性计算；judge 会话终态收敛由 judgeCaseResult 在 LLM 通过后翻转
+	// （judge 模式纯函数只给 NA/Stalled，收敛命中以 LLM 权威终态为准，不臆断）。
+	// 单轮剧本 → NotApplicable（无轮间演化可判），旧单轮 case（无 Session）不进本路径。
+	trajectory := domain.EvaluateTrajectory(evidences, testCase.ExpectedOutput, testCase.AssertionMode, testCase.Session.Goal)
+	result.Trajectory = &trajectory
+	if testCase.AssertionMode == domain.AssertionJudge {
+		return s.judgeCaseResult(ctx, tenantID, runID, ref, testCase, result)
+	}
+	return s.ruleCaseResult(ctx, tenantID, runID, ref, testCase, last.Output, result)
+}
+
 // judgeCaseResult 走 LLM judge 输出断言并把过程断言并入最终 Passed；随后内联
 // 触发评审池升级（P1c §6.6，仅 judge 实际产出判定时）。ref 供条目资源归因。
 func (s *Service) judgeCaseResult(
@@ -267,6 +343,21 @@ func (s *Service) judgeCaseResult(
 ) domain.EvalCaseResult {
 	assertion, result := s.judgeCase(ctx, testCase, result)
 	result.Passed = assertion.Passed && result.ProcessPass
+	// judge 会话终态收敛翻转（阶段 B §4.2）：LLM 权威判定末轮到达目标 → 轨迹翻转
+	// 为 Converged。judge 模式纯函数只产出 NA/Stalled——先重复后成功的会话，终态
+	// 通过说明最终收敛，不得判负。翻转后 Passed 与 Trajectory 自洽：通过即收敛。
+	if result.Error == "" && assertion.Passed && result.Trajectory != nil {
+		result.Trajectory = &domain.TrajectoryVerdict{
+			Kind:   domain.TrajectoryConverged,
+			Reason: "LLM judge 判定末轮到达目标（收敛）",
+		}
+	}
+	// LLM 判负 + 轨迹停滞/漂移：容器级归因优先——整段会话绕圈/漂移没走对比单轮维度
+	// 更能解释判负（§4.2），评审池据此强制入池复核。基础设施失败（Error 非空）不改
+	// 归因，保持 execution fail-closed 语义。
+	if result.Error == "" && !assertion.Passed && result.Trajectory != nil && result.Trajectory.Kind.Failed() {
+		result.FailureReason = "trajectory:" + string(result.Trajectory.Kind)
+	}
 	if result.Error == "" {
 		s.escalateCaseResult(ctx, tenantID, runID, ref, result, testCase, assertion, assertion.Passed, result.ProcessPass)
 	}
@@ -289,7 +380,10 @@ func (s *Service) ruleCaseResult(
 	result.Passed = assertion.Passed && result.ProcessPass
 	result.Message = assertion.Message
 	if !assertion.Passed {
-		result.FailureReason = "assert:" + string(testCase.AssertionMode)
+		// 会话轨迹判负优先容器级归因（§4.2）：stalled/drifted 说明整段会话没走对，
+		// 比单轮 assert:<mode> 更能解释判负（末轮 miss 是表象，演化是根因）；无轨迹
+		// 维度（旧单轮 case Trajectory=nil）回退断言归因，golden 判定不变。
+		result.FailureReason = trajectoryFailureReason(result.Trajectory, "assert:"+string(testCase.AssertionMode))
 	}
 	s.escalateCaseResult(ctx, tenantID, runID, ref, result, testCase, assertion, assertion.Passed, result.ProcessPass)
 	return result
@@ -409,13 +503,20 @@ func (s *Service) judgeCase(ctx context.Context, testCase domain.EvalCase, resul
 	if testCase.JudgeSpec != nil {
 		spec = *testCase.JudgeSpec
 	}
-	assertion, err := s.judge.Judge(ctx, port.JudgeRequest{
+	judgeReq := port.JudgeRequest{
 		Model:          spec.Model,
 		Rubric:         spec.Rubric,
 		Input:          string(inputJSON),
 		ExpectedOutput: string(expectedJSON),
 		Actual:         string(actualJSON),
-	})
+	}
+	// 会话剧本 case 携带逐轮 transcript（阶段 B §4.3）：judge 据此评「末轮是否到达
+	// 目标/守住探针」。单轮 case 无 transcript（result.Turns 为空），请求契约与既有
+	// 逐字节一致（wiring adapter 回归测试守护）。
+	if testCase.IsSession() {
+		judgeReq.Transcript = domain.FormatTranscript(result.Turns, testCase.Session.Goal)
+	}
+	assertion, err := s.judge.Judge(ctx, judgeReq)
 	if err != nil {
 		result.Error = err.Error()
 		result.FailureReason = "execution"
@@ -451,6 +552,16 @@ func judgeFailureReason(assertion domain.AssertionResult) string {
 		return "dimension:" + worst.Name
 	}
 	return "judge"
+}
+
+// trajectoryFailureReason 组装会话 case 失败归因：轨迹判负（stalled/drifted）时用
+// 容器级 "trajectory:<kind>"（整段会话没走对，§4.2——比单轮断言归因更能解释判负），
+// 否则回退断言/维度归因。Trajectory=nil（旧单轮 case）恒回退，golden 判定不变。
+func trajectoryFailureReason(t *domain.TrajectoryVerdict, fallback string) string {
+	if t != nil && t.Kind.Failed() {
+		return "trajectory:" + string(t.Kind)
+	}
+	return fallback
 }
 
 func observedTraceToEvidence(t port.ObservedTrace) *domain.ObservedTraceEvidence {

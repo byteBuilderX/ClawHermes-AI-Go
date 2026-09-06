@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "source_digest": "c4c33e97d0843c56edef36ce1aa14588398791634b751ed806ec2feaab1b3d9c",
+  "manifest_digest": "c5b3ec299b7ae2f1d67ada9db6b3e6fbdc4a72fa015c9fef65fd58f5f0c7e5f2",
+  "policy_manifest_digest": "bdb04afb6259aae36d41f861039d5f4b476ed3e33aaa2e7a47cded0ba74f59ce",
+  "tested_git_parent": "872268a5aaf187f963175f50503205076163de48",
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "mode": "short",
+  "seed": 1,
+  "started_at": "2026-09-03T12:28:00.682Z",
+  "duration_seconds": 20,
+  "host_class": "developer",
+  "packs": [],
+  "capabilities": [],
+  "action_count": 1,
+  "sequence_digest": "3cd6e4ce9001dec34139f41d6d222e5262a4f0c60d68571432f9b0918a6a98f3",
+  "evidence": {
+    "ui": 4,
+    "http": 3,
+    "database": 3,
+    "reconciled": 1
+  },
+  "artifacts": [],
+  "cleanup": {
+    "passed": true,
+    "residual_entity_ids": []
+  },
+  "unverified_capabilities": [],
+  "risk_classification": "short",
+  "status": "passed",
+  "run_topology": {
+    "run_id": "20260903t122753z-99e30a5eb325a00e",
+    "host": "127.0.0.1",
+    "ports": {
+      "backend": 46679,
+      "fixture": 45853,
+      "frontend": 34683,
+      "oauth": 40263
+    },
+    "database_name": "stratum_e2e_20260903t122753z_99e30a5eb325a00e"
+  },
+  "owned_cleanup": {
+    "database_dropped": true,
+    "lease_removed": true
+  },
+  "expires_at": "2026-09-06T12:28:28.578269159Z"
+}

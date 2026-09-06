@@ -58,8 +58,12 @@ func (f *fakeSkillRevisionService) SaveRevision(_ context.Context, _, hash strin
 }
 func (f *fakeSkillRevisionService) ListRevisions(context.Context, string) ([]skillapp.SkillRevision, error) {
 	return []skillapp.SkillRevision{
-		{ID: "revision-2", SkillID: "skill-1", RevisionNo: 2, Status: domain.VersionStatusPublished, IsCurrent: true},
-		{ID: "revision-1", SkillID: "skill-1", RevisionNo: 1, Status: domain.VersionStatusDeprecated},
+		{ID: "revision-2", SkillID: "skill-1", RevisionNo: 2, ParentRevisionID: "revision-1",
+			Status: domain.VersionStatusPublished, IsCurrent: true, CreatedBy: "u-2", CreatedByName: "Bob",
+			Name: "新名字", Description: "新描述"},
+		{ID: "revision-1", SkillID: "skill-1", RevisionNo: 1, ParentRevisionID: "",
+			Status: domain.VersionStatusDeprecated, CreatedBy: "u-1", CreatedByName: "Alice",
+			Name: "旧名字", Description: "旧描述"},
 	}, nil
 }
 func (f *fakeSkillRevisionService) RollbackRevision(_ context.Context, _, revisionID, _ string) error {
@@ -214,6 +218,17 @@ func TestSkillHandlerListRevisions(t *testing.T) {
 	}
 	if len(resp.Revisions) != 2 || resp.Revisions[0].ID != "revision-2" || !resp.Revisions[0].IsCurrent {
 		t.Fatalf("unexpected revisions: %+v", resp.Revisions)
+	}
+	// parentRevisionId：revision-2 自链到 revision-1；首版 revision-1 为空串。
+	if resp.Revisions[0].ParentRevisionID != "revision-1" || resp.Revisions[1].ParentRevisionID != "" {
+		t.Fatalf("parentRevisionId not forwarded: %+v", resp.Revisions)
+	}
+	// 操作者昵称与完整编辑面透传（列表行已含 content，Drawer 直接基于行数据 diff）。
+	if resp.Revisions[0].CreatedByName != "Bob" || resp.Revisions[1].CreatedByName != "Alice" {
+		t.Fatalf("createdByName not forwarded: %+v", resp.Revisions)
+	}
+	if resp.Revisions[0].Description != "新描述" || resp.Revisions[1].Description != "旧描述" {
+		t.Fatalf("edit surface not forwarded: %+v", resp.Revisions)
 	}
 }
 

@@ -54,5 +54,8 @@ export interface PlatformConfigVersion {
   base_version_id: number | null;
   message: string;
   created_by: string;
+  // created_by 的可读名（display_name > github_login > 原文），服务端 LEFT JOIN
+  // public.users 现算；system/未知 uuid 无命中则回退 created_by 原文。
+  created_by_name?: string;
   created_at: string;
 }

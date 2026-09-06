@@ -7,6 +7,7 @@ import (
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 )
 
@@ -39,6 +40,14 @@ func (s *LLMHistorySummarizer) WithParamResolver(r memport.PlatformParamResolver
 	return s
 }
 
+// CheckModelConfig 预检 memory.history_summary_model 是否可解析（周期 worker
+// RunOnce 顶部调用，防「模型缺失 → 无条件假 success」）。不查目录；disabled
+// 判定由探针负责。错误为 *modelconfig.Err。
+func (s *LLMHistorySummarizer) CheckModelConfig(ctx context.Context) error {
+	_, err := modelconfig.ResolveChatModel(ctx, s.paramResolver, modelconfig.KeyHistorySummaryModel)
+	return err
+}
+
 func (s *LLMHistorySummarizer) SummarizeHistory(ctx context.Context, items []string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("history llm unavailable")
@@ -54,7 +63,13 @@ func (s *LLMHistorySummarizer) SummarizeHistory(ctx context.Context, items []str
 	if client == nil {
 		return "", fmt.Errorf("history llm unavailable")
 	}
-	model := resolvePlatformString(ctx, s.paramResolver, "memory.history_summary_model", "")
+	// 总结模型为必需平台参数（fail-closed）：未显式配置或解析失败即返回
+	// *modelconfig.Err，禁止空模型回落 llmgateway 默认。
+	model, err := modelconfig.ResolveChatModel(ctx, s.paramResolver, modelconfig.KeyHistorySummaryModel)
+	if err != nil {
+		logModelConfigError(nil, "history_summary", err)
+		return "", err
+	}
 	temperature := resolvePlatformFloat(ctx, s.paramResolver, "memory.history_summary_temperature", constants.TaskSummarizeTemperature)
 	prompt := resolvePlatformString(ctx, s.paramResolver, "memory.history_summary_prompt", "")
 	if strings.TrimSpace(prompt) == "" {

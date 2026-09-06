@@ -49,4 +49,34 @@ describe('VersionHistory', () => {
     fireEvent.click(confirmButtons[confirmButtons.length - 1]);
     await waitFor(() => expect(rollback).toHaveBeenCalledWith(rows[1]));
   });
+
+  it('renders detail button for every row only when onViewDetail injected', () => {
+    const onViewDetail = vi.fn();
+    const { rerender } = render(<VersionHistory rows={rows} />);
+    expect(screen.queryByRole('button', { name: '详情' })).not.toBeInTheDocument();
+
+    rerender(<VersionHistory rows={rows} onViewDetail={onViewDetail} />);
+    expect(screen.getAllByRole('button', { name: '详情' })).toHaveLength(rows.length);
+  });
+
+  it('opens diff drawer with before/after after onViewDetail resolves', async () => {
+    const onViewDetail = vi.fn().mockResolvedValue({ before: { name: 'old' }, after: { name: 'new' } });
+    render(<VersionHistory rows={rows} onViewDetail={onViewDetail} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    await waitFor(() => expect(onViewDetail).toHaveBeenCalledWith(rows[0]));
+    expect(await screen.findByText('版本字段详情')).toBeInTheDocument();
+    expect(screen.getByText('old')).toBeInTheDocument();
+    expect(screen.getByText('new')).toBeInTheDocument();
+  });
+
+  it('keeps drawer closed and clears loading when onViewDetail rejects', async () => {
+    const onViewDetail = vi.fn().mockRejectedValue(new Error('boom'));
+    render(<VersionHistory rows={rows} onViewDetail={onViewDetail} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    // 抓取失败弹错误提示、不弹 Drawer。
+    expect(await screen.findByText('boom')).toBeInTheDocument();
+    expect(screen.queryByText('版本字段详情')).not.toBeInTheDocument();
+  });
 });

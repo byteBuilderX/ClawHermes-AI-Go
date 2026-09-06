@@ -11,9 +11,32 @@ import { AGENT_DEFAULT_MAX_CONTEXT_TOKENS, AGENT_DEFAULT_MAX_ITERATIONS } from '
 import { useTenantRole } from '@/modules/iam';
 import { RequestEditorButton } from '@/shared/components';
 import { extractErrorMessage } from '@/shared/lib';
-import { VersionHistory, type VersionRow } from '@/shared/ui';
+import { VersionHistory, type VersionDetail, type VersionRow } from '@/shared/ui';
 
 const { Title, Text } = Typography;
+
+// 版本 payload 字段（domain/agent_version.go AgentVersionSnapshot.Map() snake_case
+// 键）的中文标签；未列出的键（含 parameters 下 memory.* 点号子键）由 Drawer 回落到
+// 原文路径段。
+const AGENT_VERSION_FIELD_LABELS: Record<string, string> = {
+  name: '名称',
+  description: '描述',
+  system_prompt: '系统提示词',
+  llm_model: '模型',
+  max_iterations: '最大迭代',
+  max_context_tokens: '上下文上限',
+  memory_scope: '记忆范围',
+  temperature: '温度',
+  reasoning_effort: '推理强度',
+  max_tokens: '最大输出',
+  parameters: '记忆参数',
+  allowed_skills: '可用技能',
+  mcp_tool_ids: 'MCP 工具',
+  knowledge_workspace_ids: '知识库',
+  delegate_enabled: '委托开关',
+  delegate_max_depth: '委托深度',
+  delegate_default_max_steps: '委托默认步数',
+};
 
 export const EditAgentPage = () => {
   const {
@@ -44,6 +67,25 @@ export const EditAgentPage = () => {
     if (!agent) return;
     await agentApi.rollback(agent.id, row.id);
     await reloadAgent();
+  };
+
+  // 「详情」素材：after = 点击版整份 payload；before = 直父(parentVersionId) payload。
+  // 首版/父缺失（record 为空）→ before 空对象，全部视为新增。payload 为 snake_case
+  // 编辑面快照，由共享 Drawer 递归 JSONPath 现算叶子 diff（spec §4.3）。
+  const handleViewDetail = async (row: VersionRow): Promise<VersionDetail> => {
+    if (!agent) return { title: '', before: {}, after: {} };
+    const after = await agentApi.getVersion(agent.id, row.id);
+    let before: Record<string, unknown> = {};
+    if (after.parentVersionId) {
+      const parent = await agentApi.getVersion(agent.id, after.parentVersionId);
+      before = parent.payload ?? {};
+    }
+    return {
+      title: `版本 v${row.versionNo ?? '—'} 字段变更`,
+      fieldLabels: AGENT_VERSION_FIELD_LABELS,
+      before,
+      after: after.payload ?? {},
+    };
   };
 
   if (pageLoading) {
@@ -149,6 +191,7 @@ export const EditAgentPage = () => {
             }))}
             loading={versionsLoading}
             rollback={handleRollback}
+            onViewDetail={handleViewDetail}
             infoMessage="保存即产生新版本并立即生效；历史版本可回滚，回滚不产生新版本。"
           />
         ) },

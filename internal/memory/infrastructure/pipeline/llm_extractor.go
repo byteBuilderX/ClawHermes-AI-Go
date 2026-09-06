@@ -11,6 +11,7 @@ import (
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
 	memport "github.com/byteBuilderX/stratum/internal/memory/domain/port"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 )
 
@@ -78,27 +79,19 @@ func (e *LLMExtractor) extractionPrompt(ctx context.Context, agentID, userID str
 	return s, nil
 }
 
-// extractionModel resolves memory.extraction_model（平台级）；
-// "" 表示交由 llmgateway client 默认模型解析(pre-refactor 行为)。
-func (e *LLMExtractor) extractionModel(ctx context.Context) string {
-	if e.resolver == nil {
-		return ""
-	}
-	v, ok, err := e.resolver.ResolvePlatform(ctx, "memory.extraction_model")
-	if err != nil || !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
-}
-
 func (e *LLMExtractor) ExtractFacts(ctx context.Context, userID, agentID string, message string) ([]*memport.ExtractedFact, error) {
 	maxFacts := e.maxFacts(ctx)
 	system, err := e.extractionPrompt(ctx, agentID, userID, maxFacts)
 	if err != nil {
 		return nil, err
 	}
-	model := e.extractionModel(ctx)
+	// 抽取模型为必需平台参数（fail-closed）：未显式配置或解析失败即返回
+	// *modelconfig.Err，禁止空模型静默回落 llmgateway 默认。
+	model, err := modelconfig.ResolveChatModel(ctx, e.resolver, modelconfig.KeyExtractionModel)
+	if err != nil {
+		logConfigError(e.logger, modelconfig.KeyExtractionModel, "extraction", err)
+		return nil, err
+	}
 	req := llmdomain.NewExtractRequest(model, system, message, 0, constants.MemoryExtractLLMMaxTokens)
 	return extractFactsStructured(ctx, e.client, req, e.logger)
 }

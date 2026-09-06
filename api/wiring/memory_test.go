@@ -3,6 +3,7 @@ package wiring
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/byteBuilderX/stratum/config"
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
+	llmgateway "github.com/byteBuilderX/stratum/internal/llmgateway/infrastructure"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/pipeline"
 	memworkers "github.com/byteBuilderX/stratum/internal/memory/infrastructure/workers"
 	parametersapp "github.com/byteBuilderX/stratum/internal/parameters/application"
 	parametersdomain "github.com/byteBuilderX/stratum/internal/parameters/domain"
@@ -205,6 +209,16 @@ func (m *wiringPlatformStore) ListVersions(_ context.Context, _ string) ([]param
 	return []parametersport.PlatformVersion{}, nil
 }
 
+// GetVersion/UpdateEvalState 补齐接口（分层门禁 P1）：wiringPlatformStore 只模拟
+// 单值 settings（无版本列），版本寻址恒 ErrVersionNotFound。
+func (m *wiringPlatformStore) GetVersion(context.Context, string, int64) (parametersport.PlatformVersion, error) {
+	return parametersport.PlatformVersion{}, parametersdomain.ErrVersionNotFound
+}
+
+func (m *wiringPlatformStore) UpdateEvalState(context.Context, string, int64, string, string) error {
+	return parametersdomain.ErrVersionNotFound
+}
+
 // TestPlatformParamResolverFallback 守护 platformParamResolver 的编排：
 // 平台声明值优先；无声明回落 registry 定义默认；svc 缺失 fail-closed 到 absent。
 func TestPlatformParamResolverFallback(t *testing.T) {
@@ -233,6 +247,76 @@ func TestPlatformParamResolverFallback(t *testing.T) {
 		var nilResolver platformParamResolver
 		if _, ok, err := nilResolver.ResolvePlatform(context.Background(), "memory.max_facts_per_extraction"); ok || err != nil {
 			t.Fatalf("nil svc must be absent: (%v, %v)", ok, err)
+		}
+	})
+}
+
+// TestMemoryModelConfigRequirementsGating 守护探针必需集门控：组件没装配的 key
+// 不列入（避免误报），装配齐了才逐 key 检查。只判非空指针，不触发目录/DB 调用。
+func TestMemoryModelConfigRequirementsGating(t *testing.T) {
+	registry := &llmgateway.ModelRegistry{}
+	svc := &parametersapp.Service{}
+
+	t.Run("no LLMGateway registry yields nil", func(t *testing.T) {
+		c := &Container{LLMGateway: &LLMGateway{}, Parameters: &Parameters{Service: svc}}
+		if got := c.memoryModelConfigRequirements(); got != nil {
+			t.Fatalf("reqs = %v, want nil without registry", got)
+		}
+		if got := c.memoryModelConfigProbe(); got != nil {
+			t.Fatalf("probe must be nil without registry, got %v", got)
+		}
+	})
+
+	t.Run("no parameters service yields nil", func(t *testing.T) {
+		c := &Container{LLMGateway: &LLMGateway{Registry: registry}}
+		if got := c.memoryModelConfigRequirements(); got != nil {
+			t.Fatalf("reqs = %v, want nil without parameters service", got)
+		}
+		if got := c.memoryModelConfigProbe(); got != nil {
+			t.Fatalf("probe must be nil without parameters service, got %v", got)
+		}
+	})
+
+	workerReqs := []modelconfig.Requirement{
+		{Key: modelconfig.KeySupersedeModel, Kind: modelconfig.KindChat},
+		{Key: modelconfig.KeyHistorySummaryModel, Kind: modelconfig.KindChat},
+	}
+
+	t.Run("registry present, pipeline disabled", func(t *testing.T) {
+		c := &Container{
+			LLMGateway: &LLMGateway{Registry: registry},
+			Parameters: &Parameters{Service: svc},
+			Logger:     zap.NewNop(),
+		}
+		reqs := c.memoryModelConfigRequirements()
+		if !reflect.DeepEqual(reqs, workerReqs) {
+			t.Fatalf("reqs = %v, want worker-only %v", reqs, workerReqs)
+		}
+		if got := c.memoryModelConfigProbe(); got == nil {
+			t.Fatal("probe must mount when worker requirements present")
+		}
+	})
+
+	t.Run("pipeline present adds pipeline keys", func(t *testing.T) {
+		c := &Container{
+			LLMGateway: &LLMGateway{Registry: registry},
+			Parameters: &Parameters{Service: svc},
+			Memory:     &Memory{Pipeline: &pipeline.Pipeline{}},
+			Logger:     zap.NewNop(),
+		}
+		want := append([]modelconfig.Requirement{
+			{Key: modelconfig.KeyExtractionModel, Kind: modelconfig.KindChat},
+			{Key: modelconfig.KeyReflectionModel, Kind: modelconfig.KindChat},
+			{Key: modelconfig.KeyEnrichModel, Kind: modelconfig.KindChat},
+			{Key: modelconfig.KeySummaryModel, Kind: modelconfig.KindChat},
+			{Key: modelconfig.KeyEmbeddingModel, Kind: modelconfig.KindEmbed},
+		}, workerReqs...)
+		reqs := c.memoryModelConfigRequirements()
+		if !reflect.DeepEqual(reqs, want) {
+			t.Fatalf("reqs = %v, want full set %v", reqs, want)
+		}
+		if got := c.memoryModelConfigProbe(); got == nil {
+			t.Fatal("probe must mount when full requirements present")
 		}
 	})
 }

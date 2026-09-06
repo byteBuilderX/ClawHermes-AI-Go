@@ -31,6 +31,9 @@ export const workspaceVersionSchema = z
     status: z.string(),
     source: z.string().optional().default(''),
     contentHash: z.string().optional().default(''),
+    // ParentVersionID 指向直父版本（首版为空串）；「详情」Drawer 以父版本整份 payload
+    // 为 before 基线现算字段前后值。见 spec §4.3。
+    parentVersionId: z.string().optional().default(''),
     createdBy: z.string().optional().default(''),
     createdByName: z.string().optional().default(''),
     createdAt: z.string().optional().default(''),
@@ -40,6 +43,13 @@ export const workspaceVersionSchema = z
   })
   .passthrough();
 export type WorkspaceVersion = z.infer<typeof workspaceVersionSchema>;
+
+// 单版本内容：列表字段 + 整份编辑面 payload（name/description/config 键，config 内
+// PascalCase 子键）。「详情」Drawer 取点击版与其直父版两次内容递归 diff 叶子字段。
+export const workspaceVersionDetailSchema = workspaceVersionSchema
+  .extend({ payload: z.record(z.unknown()).optional().default({}) })
+  .passthrough();
+export type WorkspaceVersionDetail = z.infer<typeof workspaceVersionDetailSchema>;
 
 export const workspaceSchema = z
   .object({

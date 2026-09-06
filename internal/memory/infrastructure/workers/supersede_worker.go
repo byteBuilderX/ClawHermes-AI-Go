@@ -49,7 +49,7 @@ func (w *SupersedeWorker) run(ctx context.Context) {
 	w.logger.Info("memory.supersede_worker.start")
 	ticker := time.NewTicker(constants.MemoryProfileInterval)
 	defer ticker.Stop()
-	w.RunOnce(ctx)
+	w.passGuarded(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -59,9 +59,20 @@ func (w *SupersedeWorker) run(ctx context.Context) {
 			w.logger.Info("memory.supersede_worker.stopped")
 			return
 		case <-ticker.C:
-			w.RunOnce(ctx)
+			w.passGuarded(ctx)
 		}
 	}
+}
+
+// passGuarded 执行一轮带模型配置预检的 supersede pass：模型未配置/解析失败时计
+// error 并跳过 RunOnce，禁止「空跑一轮假 success」静默。disabled 判定由探针
+// （enabled 目录比对）负责。从 run() 调用，保证定时与首拍两条路径都 fail-closed。
+func (w *SupersedeWorker) passGuarded(ctx context.Context) {
+	start := time.Now()
+	if w.modelConfigUnavailable(ctx, start) {
+		return
+	}
+	w.RunOnce(ctx)
 }
 
 // RunOnce performs a single supersede check pass with panic recovery.
@@ -170,6 +181,23 @@ outer:
 		incWorkerMessages("supersede", w.tenantID, "success")
 		observeWorkerDuration("supersede", w.tenantID, time.Since(start).Seconds())
 	}
+}
+
+// modelConfigUnavailable 预检 supersede 模型配置：judge 支持 CheckModelConfig 且
+// 模型未配置/解析失败时返回 true（已计 error + duration），RunOnce 据此提前收尾，
+// 避免把模型缺失当一轮 success 上报。
+func (w *SupersedeWorker) modelConfigUnavailable(ctx context.Context, start time.Time) bool {
+	c, ok := w.judge.(interface{ CheckModelConfig(context.Context) error })
+	if !ok {
+		return false
+	}
+	if err := c.CheckModelConfig(ctx); err != nil {
+		logModelConfigError(w.logger, "supersede", err)
+		incWorkerMessages("supersede", w.tenantID, "error")
+		observeWorkerDuration("supersede", w.tenantID, time.Since(start).Seconds())
+		return true
+	}
+	return false
 }
 
 // deleteSupersededVector removes the superseded fact's vector. Best-effort

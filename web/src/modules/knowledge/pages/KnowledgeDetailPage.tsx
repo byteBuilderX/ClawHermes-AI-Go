@@ -1,6 +1,7 @@
 import { HistoryOutlined } from '@ant-design/icons';
 import { Button, Modal } from 'antd';
 
+import { knowledgeApi } from '../api/knowledge.api';
 import { DocAccessModal } from '../components/DocAccessModal';
 import { DocPreviewDrawer } from '../components/DocPreviewDrawer';
 import { WorkspaceConfigForm } from '../components/WorkspaceConfigForm';
@@ -12,7 +13,15 @@ import { WorkspaceStatsCard } from '../components/WorkspaceStatsCard';
 import { WorkspaceUploadZone } from '../components/WorkspaceUploadZone';
 import { useKnowledgeDetailPage } from '../hooks/useKnowledgeDetailPage';
 
-import { VersionHistory } from '@/shared/ui';
+import { VersionHistory, type VersionDetail, type VersionRow } from '@/shared/ui';
+
+// 版本 payload（domain 快照 .Map() 的 name/description/config 键）的中文标签；
+// config 内子键为 PascalCase（无 json tag）且不在此表 → 由 Drawer 回落到原文段。
+const KNOWLEDGE_WORKSPACE_FIELD_LABELS: Record<string, string> = {
+  name: '名称',
+  description: '描述',
+  config: 'RAG 配置',
+};
 
 export const KnowledgeDetailPage = () => {
   const {
@@ -59,6 +68,24 @@ export const KnowledgeDetailPage = () => {
     rollbackVersion,
     undoEdits,
   } = useKnowledgeDetailPage();
+
+  // 「详情」素材：after = 点击版整份 payload；before = 直父(parentVersionId) payload。
+  // 首版/父缺失（record 为空）→ before 空对象，全部视为新增。payload 为
+  // name/description/config 键，由共享 Drawer 递归现算叶子 diff（spec §4.3）。
+  const handleViewDetail = async (row: VersionRow): Promise<VersionDetail> => {
+    const after = await knowledgeApi.getVersion(name, row.id);
+    let before: Record<string, unknown> = {};
+    if (after.parentVersionId) {
+      const parent = await knowledgeApi.getVersion(name, after.parentVersionId);
+      before = parent.payload ?? {};
+    }
+    return {
+      title: `版本 v${row.versionNo ?? '—'} 字段变更`,
+      fieldLabels: KNOWLEDGE_WORKSPACE_FIELD_LABELS,
+      before,
+      after: after.payload ?? {},
+    };
+  };
 
   if (statsLoading && !stats) {
     return <WorkspaceDetailSkeleton />;
@@ -166,6 +193,7 @@ export const KnowledgeDetailPage = () => {
             }))}
             loading={versionsLoading}
             rollback={rollbackVersion}
+            onViewDetail={handleViewDetail}
           />
         </Modal>
       )}

@@ -368,3 +368,105 @@ func TestChatHandler_AddMessage_ownershipFailed(t *testing.T) {
 		t.Fatalf("want 403, got %d", w.Code)
 	}
 }
+
+// --- messageResponse wire contract ---
+
+// TestMessageResponse_SourcesEmptyArrayAndCamelCaseWire pins the replay wire of
+// messageResponse to the live SSE done frame: nil Sources must serialize as
+// "sources":[] (never null) while every pre-existing key survives, and a
+// non-empty source must serialize camelCase — identical to agentExecutionDonePayload.
+func TestMessageResponse_SourcesEmptyArrayAndCamelCaseWire(t *testing.T) {
+	createdAt := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	base := &agent.ChatMessage{
+		ID:             "m-1",
+		ConversationID: "c-1",
+		Role:           "assistant",
+		Content:        "hello",
+		StepsJSON:      json.RawMessage(`[{"type":"think","content":"t"}]`),
+		IsError:        true,
+		CreatedAt:      createdAt,
+		Artifacts: []domain.ExecutionArtifact{{
+			Type: "diagnostic_report", ProfileVersion: "v1",
+		}},
+	}
+	preExistingKeys := []string{
+		"id", "conversation_id", "role", "content",
+		"steps", "artifacts", "is_error", "created_at",
+	}
+	assertPreExistingKeysPreserved := func(t *testing.T, decoded map[string]any) {
+		t.Helper()
+		for _, key := range preExistingKeys {
+			if _, ok := decoded[key]; !ok {
+				t.Fatalf("messageResponse dropped pre-existing key %q: %#v", key, decoded)
+			}
+		}
+		if decoded["id"] != "m-1" || decoded["conversation_id"] != "c-1" ||
+			decoded["role"] != "assistant" || decoded["content"] != "hello" {
+			t.Fatalf("scalar fields drifted: %#v", decoded)
+		}
+		if decoded["is_error"] != true {
+			t.Fatalf("is_error not preserved: %#v", decoded["is_error"])
+		}
+		if decoded["created_at"] != createdAt.Format(time.RFC3339Nano) {
+			t.Fatalf("created_at not preserved: %#v", decoded["created_at"])
+		}
+		if steps, ok := decoded["steps"].([]any); !ok || len(steps) != 1 {
+			t.Fatalf("steps not preserved as a non-empty array: %#v", decoded["steps"])
+		}
+		if arts, ok := decoded["artifacts"].([]any); !ok || len(arts) != 1 {
+			t.Fatalf("artifacts not preserved as a non-empty array: %#v", decoded["artifacts"])
+		}
+	}
+
+	t.Run("nil sources serialize as empty array and keep every pre-existing key", func(t *testing.T) {
+		raw, err := json.Marshal(messageResponse(base))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"sources":[]`) {
+			t.Fatalf("messageResponse must serialize nil sources as []: %s", raw)
+		}
+		if strings.Contains(string(raw), `"sources":null`) {
+			t.Fatalf("messageResponse must never serialize null sources: %s", raw)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		assertPreExistingKeysPreserved(t, decoded)
+		if sources, ok := decoded["sources"].([]any); !ok || len(sources) != 0 {
+			t.Fatalf("sources = %#v, want empty array", decoded["sources"])
+		}
+	})
+
+	t.Run("one source serializes camelCase fields incl score and hasScore", func(t *testing.T) {
+		msg := *base
+		msg.Sources = []domain.RAGSearchSource{{
+			WorkspaceID: "ws-1", WorkspaceName: "产品库", ChunkID: "c-1",
+			DocumentID: "doc-1", DocumentTitle: "用户手册.pdf", Snippet: "s",
+			Score: 0.91, HasScore: true,
+		}}
+		raw, err := json.Marshal(messageResponse(&msg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		assertPreExistingKeysPreserved(t, decoded)
+		sources, ok := decoded["sources"].([]any)
+		if !ok || len(sources) != 1 {
+			t.Fatalf("sources = %#v, want 1 item", decoded["sources"])
+		}
+		first, ok := sources[0].(map[string]any)
+		if !ok {
+			t.Fatalf("source = %#v, want object", sources[0])
+		}
+		for _, key := range []string{"workspaceId", "workspaceName", "chunkId", "documentId", "documentTitle", "snippet", "score", "hasScore"} {
+			if _, ok := first[key]; !ok {
+				t.Fatalf("source missing %q: %#v", key, first)
+			}
+		}
+	})
+}

@@ -346,6 +346,60 @@ func TestTryEscalateCaseResultJudgeConflict(t *testing.T) {
 	}
 }
 
+// TestTryEscalateCaseResultTrajectoryFailedForcesInsert 覆盖会话容器级轨迹判负强制入池
+// （spec 阶段 B §4.5 盲点）：规则 case 输出失败（outputPass=false）本无任何触发——但
+// 轨迹 drifted 是「曾到达又推翻」的容器级负例，必须追加 trajectory_failed 入池，绝不
+// 因逐轮信号为空而漏检。快照同时携带 trajectory 归因供评审员复核。
+func TestTryEscalateCaseResultTrajectoryFailedForcesInsert(t *testing.T) {
+	repo := &fakeReviewRepo{}
+	svc := newTestReviewService(repo)
+	result := domain.EvalCaseResult{
+		ID: "cr-1", CaseID: "c1", TraceID: "t-1", Passed: false, ProcessPass: true,
+		Trajectory: &domain.TrajectoryVerdict{Kind: domain.TrajectoryDrifted, Reason: "第 0 轮曾命中终态期望但末轮未守住（漂移）"},
+	}
+	c := domain.EvalCase{ID: "c1", AssertionMode: domain.AssertionContains}
+	assertion := domain.AssertionResult{Passed: false, Confidence: 0.9}
+	if err := svc.TryEscalateCaseResult(
+		context.Background(), "t1", "run-1",
+		domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1"}, result, c, assertion, false, true,
+	); err != nil {
+		t.Fatalf("escalate: %v", err)
+	}
+	if len(repo.inserted) != 1 || repo.inserted[0].TriggerReason != domain.TriggerTrajectoryFailed {
+		t.Fatalf("inserted = %+v, want single trajectory_failed item", repo.inserted)
+	}
+	snap, ok := repo.inserted[0].Snapshot.(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot type = %T, want map[string]any", repo.inserted[0].Snapshot)
+	}
+	traj, ok := snap["trajectory"].(*domain.TrajectoryVerdict)
+	if !ok || traj.Kind != domain.TrajectoryDrifted {
+		t.Fatalf("snapshot trajectory = %v, want drifted verdict", snap["trajectory"])
+	}
+}
+
+// TestTryEscalateCaseResultTrajectoryConvergedNoTrigger 覆盖轨迹非判负（converged）时
+// trajectory_failed 不触发：通过即收敛，评审池不被噪声条目淹没。
+func TestTryEscalateCaseResultTrajectoryConvergedNoTrigger(t *testing.T) {
+	repo := &fakeReviewRepo{}
+	svc := newTestReviewService(repo)
+	result := domain.EvalCaseResult{
+		ID: "cr-1", CaseID: "c1", TraceID: "t-1", Passed: true, ProcessPass: true,
+		Trajectory: &domain.TrajectoryVerdict{Kind: domain.TrajectoryConverged, Reason: "末轮命中终态"},
+	}
+	c := domain.EvalCase{ID: "c1", AssertionMode: domain.AssertionContains}
+	assertion := domain.AssertionResult{Passed: true, Confidence: 0.9}
+	if err := svc.TryEscalateCaseResult(
+		context.Background(), "t1", "run-1",
+		domain.ResourceRef{Kind: domain.ResourceKindAgent, ResourceID: "agent-1"}, result, c, assertion, true, true,
+	); err != nil {
+		t.Fatalf("escalate: %v", err)
+	}
+	if len(repo.inserted) != 0 {
+		t.Fatalf("inserted = %d, want 0 (converged must not trigger)", len(repo.inserted))
+	}
+}
+
 // TestTryEscalateCaseResultSnapshotSanitized 覆盖评审池快照脱敏（安全红线，spec §6.5）：
 // case_result 评审条目的 actual 与 tool_sequence 入快照前必须经 domain 脱敏，与
 // eval_case_results 路径行为一致。敏感 Arguments 键（api_key/token/password）整体

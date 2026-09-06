@@ -12,9 +12,11 @@ import (
 )
 
 var (
-	// ErrSuiteDraftMissing means the suite was never published and has no
-	// active revision to inherit a resource kind from, so generation cannot
-	// scope its sampling.
+	// ErrSuiteDraftMissing means no draft revision exists where one is needed:
+	// generation cannot scope its sampling without a kind-carrying draft,
+	// draft-editing commands (add/delete case, start next draft) require the
+	// suite's current draft, and a suite never published has no active revision
+	// to seed a fresh draft from. 映射 409（先开启/继承草稿再操作）。
 	ErrSuiteDraftMissing = errors.New("evaluation suite has no draft revision")
 	// ErrNoSamplesFound means no (query, response, feedback) triplets exist
 	// for the suite's resource kind.

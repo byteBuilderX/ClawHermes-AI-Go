@@ -386,7 +386,7 @@ func (c *Container) buildAgent(ctx context.Context) error {
 	if c.Platform != nil {
 		deps.Metrics = c.Platform.Metrics
 	}
-	wireTokenLedger(registry, &deps, c.platformMetrics(), c.Logger)
+	wireTokenLedger(registry, &deps, c.Logger)
 	deps.ParametersProvider = agentParametersProvider(c)
 	deps.RuleGuard = agentRuleGuard(c, deps.Metrics)
 	if c.Memory != nil && c.Memory.Service != nil {
@@ -492,10 +492,11 @@ func wireCleanupWorkers(c *Container, a *Agent, ctx context.Context) {
 }
 
 // wireTokenLedger 注入 TokenLedger 到 Registry 与 AgentService deps：span cost
-// 此前恒 0（Noop 返回 0），接线后为真实 USD + Prometheus 指标。Registry.Get
+// 此前恒 0（Noop 返回 0），接线后为真实 USD。ledger 不打 Prometheus usage ——
+// token 计数由网关出站唯一记账（spec §11 D2①，C1 去重）。Registry.Get
 // hydrate 的 agent 同样走执行链路，两个构建点必须同源。
-func wireTokenLedger(registry *agent.Registry, deps *agent.AgentServiceDeps, metrics observability.MetricsProvider, logger *zap.Logger) {
-	ledger := agent.NewTokenLedger(metrics, logger)
+func wireTokenLedger(registry *agent.Registry, deps *agent.AgentServiceDeps, logger *zap.Logger) {
+	ledger := agent.NewTokenLedger(logger)
 	registry.SetLedger(ledger)
 	deps.Ledger = ledger
 }

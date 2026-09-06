@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/byteBuilderX/stratum/internal/memory/infrastructure/modelconfig"
 	"github.com/byteBuilderX/stratum/pkg/constants"
 
 	llmdomain "github.com/byteBuilderX/stratum/internal/llmgateway/domain"
@@ -44,11 +45,12 @@ func (s keyedResolverStub) ResolvePlatform(_ context.Context, key string) (any, 
 
 const testExtractionPrompt = "你是长期记忆提取助手，服务用户 {user_id}，供 AI 助手 {agent_id} 使用。最多提取 {max_facts} 条事实。只输出 JSON 数组。"
 
-// newConfiguredExtractor 构造已配置完整抽取提示词的 extractor（S2 契约：
-// memory.extraction_prompt 必填，代码渲染占位符）。
+// newConfiguredExtractor 构造已配置完整抽取提示词 + 抽取模型（均属必需平台参数：
+// memory.extraction_prompt / memory.extraction_model 必填，代码渲染占位符）。
 func newConfiguredExtractor(llm llmdomain.Completer, extra map[string]any) *LLMExtractor {
 	vals := map[string]any{
 		"memory.extraction_prompt": testExtractionPrompt,
+		"memory.extraction_model":  "test-model",
 	}
 	for k, v := range extra {
 		vals[k] = v
@@ -86,16 +88,29 @@ func TestLLMExtractorFailsClosedWithoutPrompt(t *testing.T) {
 	}
 }
 
-// TestLLMExtractorLeavesModelEmpty 验证抽取请求 Model 为空（llmgateway client
-// 默认解析，pre-refactor 行为）。
-func TestLLMExtractorLeavesModelEmpty(t *testing.T) {
+// TestLLMExtractorFailsClosedWithoutModel 验证 memory.extraction_model 缺失即
+// fail-closed：ExtractFacts 返回 *modelconfig.Err(state=missing)，请求绝不带空
+// 模型下发（禁止回落 llmgateway 目录默认——原缺陷根因）。
+func TestLLMExtractorFailsClosedWithoutModel(t *testing.T) {
 	llm := &extractorLLMStub{content: `[]`}
-	extractor := newConfiguredExtractor(llm, nil)
-	if _, err := extractor.ExtractFacts(context.Background(), "user-1", "agent-1", "msg"); err != nil {
-		t.Fatal(err)
+	extractor := NewLLMExtractor(llm)
+	extractor.SetTenantID("t1")
+	extractor.SetPlatformParamResolver(keyedResolverStub{vals: map[string]any{
+		"memory.extraction_prompt": testExtractionPrompt,
+	}})
+	_, err := extractor.ExtractFacts(context.Background(), "user-1", "agent-1", "msg")
+	if err == nil {
+		t.Fatal("missing memory.extraction_model must fail closed")
+	}
+	ce, ok := modelconfig.AsConfigError(err)
+	if !ok {
+		t.Fatalf("expected *modelconfig.Err, got %v", err)
+	}
+	if ce.State != modelconfig.StateMissing || ce.Key != modelconfig.KeyExtractionModel {
+		t.Fatalf("state/key = %s/%s, want missing/%s", ce.State, ce.Key, modelconfig.KeyExtractionModel)
 	}
 	if llm.model != "" {
-		t.Fatalf("expected empty model by default, got %q", llm.model)
+		t.Fatalf("no LLM call must be issued on config failure, got model %q", llm.model)
 	}
 }
 
@@ -121,6 +136,7 @@ func TestLLMExtractorMaxFactsDegrade(t *testing.T) {
 	extractor.SetTenantID("t1")
 	extractor.SetPlatformParamResolver(keyedResolverStub{vals: map[string]any{
 		"memory.extraction_prompt": testExtractionPrompt,
+		"memory.extraction_model":  "test-model",
 	}})
 	if _, err := extractor.ExtractFacts(context.Background(), "user-1", "agent-1", "msg"); err != nil {
 		t.Fatal(err)
@@ -139,6 +155,7 @@ func TestLLMExtractorCustomExtractionPrompt(t *testing.T) {
 	custom := "记忆助手：用户 {user_id}，助手 {agent_id}，上限 {max_facts} 条。只输出 JSON。"
 	extractor.SetPlatformParamResolver(keyedResolverStub{vals: map[string]any{
 		"memory.extraction_prompt": custom,
+		"memory.extraction_model":  "test-model",
 	}})
 
 	if _, err := extractor.ExtractFacts(context.Background(), "user-1", "agent-1", "msg"); err != nil {
@@ -154,8 +171,8 @@ func TestLLMExtractorCustomExtractionPrompt(t *testing.T) {
 	}
 }
 
-// TestLLMExtractorCustomExtractionModel 验证 memory.extraction_model 非空时传入
-// 请求；缺失回落空串（client 默认解析）。
+// TestLLMExtractorCustomExtractionModel 验证显式配置的 memory.extraction_model
+// 传入抽取请求（必需平台参数，非空才放行）。
 func TestLLMExtractorCustomExtractionModel(t *testing.T) {
 	llm := &extractorLLMStub{content: `[]`}
 	extractor := NewLLMExtractor(llm)

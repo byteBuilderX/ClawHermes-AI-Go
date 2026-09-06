@@ -1,5 +1,9 @@
-import { Alert, Button, Modal, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+
+import { VersionDiffDrawer } from './VersionDiffDrawer';
 
 import { extractErrorMessage } from '@/shared/lib';
 
@@ -27,6 +31,16 @@ export interface VersionRow {
   summary?: Record<string, unknown>;
 }
 
+/** onViewDetail 返回的详情素材：Drawer 据此现算该版本相对基线的字段前后值。 */
+export interface VersionDetail {
+  title?: string;
+  fieldLabels?: Record<string, string>;
+  /** 基线内容快照（变更前）；首版/基线缺失时传空对象表示「全为新增」。 */
+  before: Record<string, unknown>;
+  /** 目标版本内容快照（变更后）。 */
+  after: Record<string, unknown>;
+}
+
 export interface VersionHistoryProps {
   rows: VersionRow[];
   loading?: boolean;
@@ -34,12 +48,17 @@ export interface VersionHistoryProps {
   rollback?: (row: VersionRow) => Promise<void>;
   /** 顶部说明文案；不传则不渲染 Alert。 */
   infoMessage?: string;
+  /** 版本详情抓取器：注入后操作列出现「详情」，点击取基线+目标快照开 Drawer。 */
+  onViewDetail?: (row: VersionRow) => Promise<VersionDetail>;
 }
 
 // VersionHistory 是技能/agent 共用的版本历史展示：当前生效标记、操作者昵称、
-// 时间与回滚入口。回滚确认 Modal 内置于组件，成功后执行页面注入的 rollback
-// （API 调用 + 数据刷新），失败错误提示在组件内兜底。
-export const VersionHistory = ({ rows, loading = false, rollback, infoMessage }: VersionHistoryProps) => {
+// 时间、回滚入口与可选的「详情」Drawer（展示逐字段前后值）。回滚确认 Modal
+// 内置于组件，成功后执行页面注入的 rollback，失败错误提示在组件内兜底。
+export const VersionHistory = ({ rows, loading = false, rollback, infoMessage, onViewDetail }: VersionHistoryProps) => {
+  const [detail, setDetail] = useState<VersionDetail | null>(null);
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+
   const confirmRollback = (row: VersionRow) => {
     Modal.confirm({
       title: `回滚到版本 v${row.versionNo ?? '—'}？`,
@@ -57,6 +76,18 @@ export const VersionHistory = ({ rows, loading = false, rollback, infoMessage }:
     });
   };
 
+  const openDetail = async (row: VersionRow) => {
+    if (!onViewDetail) return;
+    setDetailLoadingId(row.id);
+    try {
+      setDetail(await onViewDetail(row));
+    } catch (err) {
+      message.error({ content: extractErrorMessage(err, '加载版本详情失败'), duration: 3 });
+    } finally {
+      setDetailLoadingId(null);
+    }
+  };
+
   const columns: ColumnsType<VersionRow> = [
     { title: '版本', dataIndex: 'versionNo', width: 80, render: (no: number) => `v${no ?? '—'}` },
     { title: '状态', dataIndex: 'status', width: 150, render: (_: unknown, r: VersionRow) => (
@@ -67,11 +98,16 @@ export const VersionHistory = ({ rows, loading = false, rollback, infoMessage }:
     ) },
     { title: '操作者', dataIndex: 'createdBy', width: 140, render: (_: unknown, r: VersionRow) => r.createdByName || r.createdBy || <Text type="secondary">—</Text> },
     { title: '时间', dataIndex: 'createdAt', width: 180, render: (t: string) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : <Text type="secondary">—</Text>) },
-    { title: '操作', key: 'actions', width: 100, render: (_: unknown, r: VersionRow) => (
-      r.canRollback && rollback ? (
-        <Button type="link" size="small" danger onClick={() => confirmRollback(r)}>回滚</Button>
-      ) : null
-    ) },
+    { title: '操作', key: 'actions', width: 170, render: (_: unknown, r: VersionRow) => {
+      const actions: ReactNode[] = [];
+      if (r.canRollback && rollback) {
+        actions.push(<Button key="rollback" type="link" size="small" danger onClick={() => confirmRollback(r)}>回滚</Button>);
+      }
+      if (onViewDetail) {
+        actions.push(<Button key="detail" type="link" size="small" loading={detailLoadingId === r.id} onClick={() => openDetail(r)}>详情</Button>);
+      }
+      return actions.length > 0 ? <Space size={0}>{actions}</Space> : null;
+    } },
   ];
 
   return (
@@ -80,6 +116,14 @@ export const VersionHistory = ({ rows, loading = false, rollback, infoMessage }:
       <Table<VersionRow> rowKey="id" size="small" loading={loading} columns={columns} dataSource={rows}
         pagination={{ pageSize: 5, showSizeChanger: false }}
         locale={{ emptyText: <Paragraph type="secondary" style={{ padding: 16 }}>暂无版本记录</Paragraph> }} />
+      <VersionDiffDrawer
+        open={detail !== null}
+        onClose={() => setDetail(null)}
+        title={detail?.title}
+        fieldLabels={detail?.fieldLabels}
+        before={detail?.before ?? {}}
+        after={detail?.after ?? {}}
+      />
     </div>
   );
 };

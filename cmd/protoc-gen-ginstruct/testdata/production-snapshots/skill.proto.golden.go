@@ -34,19 +34,20 @@ type SkillProductResponse struct {
 }
 
 type SkillRevisionResponse struct {
-	ID            string         `json:"id"`
-	SkillID       string         `json:"skillId"`
-	RevisionNo    int32          `json:"revisionNo,omitempty"`
-	Status        string         `json:"status"`
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	Instructions  string         `json:"instructions"`
-	PublishChecks map[string]any `json:"publishChecks,omitempty"`
-	IsCurrent     bool           `json:"isCurrent"`
-	CreatedBy     string         `json:"createdBy"`
-	CreatedAt     string         `json:"createdAt,omitempty"`
-	ContentHash   string         `json:"contentHash,omitempty"`
-	CreatedByName string         `json:"createdByName"`
+	ID               string         `json:"id"`
+	SkillID          string         `json:"skillId"`
+	RevisionNo       int32          `json:"revisionNo,omitempty"`
+	Status           string         `json:"status"`
+	Name             string         `json:"name"`
+	Description      string         `json:"description"`
+	Instructions     string         `json:"instructions"`
+	PublishChecks    map[string]any `json:"publishChecks,omitempty"`
+	IsCurrent        bool           `json:"isCurrent"`
+	CreatedBy        string         `json:"createdBy"`
+	CreatedAt        string         `json:"createdAt,omitempty"`
+	ContentHash      string         `json:"contentHash,omitempty"`
+	CreatedByName    string         `json:"createdByName"`
+	ParentRevisionID string         `json:"parentRevisionId,omitempty"`
 }
 
 type SkillRevisionsResponse struct {

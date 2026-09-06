@@ -34,7 +34,8 @@ type RuleGuardDeps struct {
 	Logger   *zap.Logger
 }
 
-// RuleGuard 是内联规则护栏（§4.1 快路径）：denylist 命中即时拦截，零 LLM、零额外延迟。
+// RuleGuard 是内联 L1 规则护栏（spec §3.1 快路径，O4：检测恒开 + 执行受控）：
+// denylist 命中恒检测/恒观测，仅 enabled 时真拦截。零 LLM、零额外延迟。
 type RuleGuard struct {
 	deps RuleGuardDeps
 }
@@ -49,13 +50,32 @@ func NewRuleGuard(deps RuleGuardDeps) *RuleGuard {
 	return &RuleGuard{deps: deps}
 }
 
-// Check 对单个工具名执行规则护栏：denylist 命中返回 RuleBlockedError（fail closed）
-// 并计数 T1（eval_rule_hit_total + eval_gate_action_total），同时把拦截记录追加到
-// ctx 累积器供观测事件携带；未命中或规则未启用返回 nil（放行）。
+// 规则护栏指标标签常量（spec §3.1 L198 / dict R20）：检测与执行分离后 hit 判别由
+// verdict 承担（block=真拦截 / detected=检测未拦截）；guard 层计数落 l1_rule
+// （原 rule_guard label 全仓零消费，R20 裁决更名）。enabled==nil 视为 false。
+const (
+	ruleGuardKindDenylist    = "tool_denylist"
+	ruleGuardResourceAgent   = "agent"
+	ruleGuardLayerL1         = "l1_rule"
+	ruleGuardVerdictBlock    = "block"
+	ruleGuardVerdictDetected = "detected"
+)
+
+// Check 对单个工具名执行 L1 规则护栏（spec §3.1 / O4）。检测与执行分离：
+//   - denylist 为空/nil → (nil,false)，零命中零观测；
+//   - 命中判定保留 strings.EqualFold(strings.TrimSpace(denied), toolID)（大小写不敏感）；
+//   - 任一命中（不论 enabled）→ (a) 恒写 ctx 累积器（ruleBlockCollectorKey，供
+//     emitObservation 产出 rule 信号）+ (b) IncEvalRuleHit("tool_denylist","agent",verdict)，
+//     verdict = enabled ? "block" : "detected"（判别由 verdict 承担，R20）；
+//   - 仅 enabled && hit → (c) IncEvalGateAction("l1_rule","block") + 返回
+//     RuleBlockedError（真拦截，fail closed）；否则 (nil,false) 放行（检测/观测照常）。
+//
+// enabled==nil 视为 false；RuleGuardDeps 结构与调用点（tool_execution_guard.go）语义不变。
 func (g *RuleGuard) Check(ctx context.Context, toolID string) (*RuleBlockedError, bool) {
-	if g == nil || g.deps.Enabled == nil || !g.deps.Enabled(ctx) {
+	if g == nil {
 		return nil, false
 	}
+	enabled := g.deps.Enabled != nil && g.deps.Enabled(ctx)
 	if g.deps.Denylist == nil {
 		return nil, false
 	}
@@ -64,17 +84,22 @@ func (g *RuleGuard) Check(ctx context.Context, toolID string) (*RuleBlockedError
 		if denied == "" || !strings.EqualFold(denied, toolID) {
 			continue
 		}
-		block := &RuleBlockedError{
-			Rule:    "tool_denylist",
-			Tool:    toolID,
-			Message: fmt.Sprintf("tool %q blocked by platform rule", toolID),
+		message := fmt.Sprintf("tool %q blocked by platform rule", toolID)
+		verdict := ruleGuardVerdictDetected
+		if enabled {
+			verdict = ruleGuardVerdictBlock
 		}
-		g.deps.Metrics.IncEvalRuleHit("tool_denylist", "agent", "block")
-		g.deps.Metrics.IncEvalGateAction("rule_guard", "block")
+		// (a)+(b) 检测恒开：命中恒记 hit、恒填累积器（O4：disabled 命中同样产观测）。
+		g.deps.Metrics.IncEvalRuleHit(ruleGuardKindDenylist, ruleGuardResourceAgent, verdict)
 		if collector, ok := ctx.Value(ruleBlockCollectorKey{}).(*[]domain.RuleBlock); ok {
-			*collector = append(*collector, domain.RuleBlock{Rule: block.Rule, Tool: toolID, Message: block.Message})
+			*collector = append(*collector, domain.RuleBlock{Rule: ruleGuardKindDenylist, Tool: toolID, Message: message})
 		}
-		return block, true
+		// (c) 执行受控：仅 enabled && hit 真拦截（fail closed）。
+		if enabled {
+			g.deps.Metrics.IncEvalGateAction(ruleGuardLayerL1, ruleGuardVerdictBlock)
+			return &RuleBlockedError{Rule: ruleGuardKindDenylist, Tool: toolID, Message: message}, true
+		}
+		return nil, false
 	}
 	return nil, false
 }

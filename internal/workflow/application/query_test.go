@@ -31,7 +31,20 @@ func (s *queryStore) ListDefinitions(_ context.Context, _ string, query port.Def
 
 func (s *queryStore) ListVersions(_ context.Context, _, _ string, query port.VersionListQuery) ([]domain.Version, int, error) {
 	s.versionQuery = query
-	return []domain.Version{{ID: "version-2", DefinitionID: "wf-1", Number: 2}}, 2, nil
+	return []domain.Version{{ID: "version-2", DefinitionID: "wf-1", Number: 2, CreatedBy: "user-a"}}, 2, nil
+}
+
+// stubNameResolver 固定 actor→昵称映射，供 ListVersions 展示名解析用例使用。
+type stubNameResolver struct{ names map[string]string }
+
+func (r stubNameResolver) ResolveActorNames(_ context.Context, actorIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(actorIDs))
+	for _, id := range actorIDs {
+		if n, ok := r.names[id]; ok {
+			out[id] = n
+		}
+	}
+	return out, nil
 }
 
 func (s *queryStore) ListRuns(_ context.Context, _ string, query port.RunListQuery) ([]domain.Run, int, error) {
@@ -73,6 +86,24 @@ func TestDefinitionServiceListsVersionsWithStablePageOffset(t *testing.T) {
 	require.Equal(t, port.VersionListQuery{Offset: 10, Limit: 10}, store.versionQuery)
 	require.Equal(t, 2, page.Total)
 	require.Equal(t, int64(2), page.Versions[0].Number)
+	// 未注入解析器：保留 raw actor（CreatedByName 空，前端回退 CreatedBy）。
+	require.Equal(t, "user-a", page.Versions[0].CreatedBy)
+	require.Empty(t, page.Versions[0].CreatedByName)
+}
+
+// TestDefinitionServiceListsVersionsResolvesOperatorName 锁定 ListVersions 对
+// 发布者昵称的批量解析：注入解析器后 CreatedByName 取展示名，raw CreatedBy 保留。
+func TestDefinitionServiceListsVersionsResolvesOperatorName(t *testing.T) {
+	store := newQueryStore()
+	service := application.NewDefinitionService(store, store, (&ids{}).NewID)
+	service.SetActorNameResolver(stubNameResolver{names: map[string]string{"user-a": "Alice"}})
+
+	page, err := service.ListVersions(context.Background(), "tenant-1", "wf-1", application.ListVersionsQuery{
+		Page: 1, PageSize: 10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "user-a", page.Versions[0].CreatedBy)
+	require.Equal(t, "Alice", page.Versions[0].CreatedByName)
 }
 
 func TestRunServiceListsMemberRunsWithOwnershipFilter(t *testing.T) {

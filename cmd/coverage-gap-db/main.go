@@ -20,6 +20,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/byteBuilderX/stratum/pkg/reporoot"
 )
 
 // column represents a database column from a CREATE TABLE or ALTER TABLE.
@@ -76,7 +78,7 @@ func main() {
 	flag.BoolVar(&asJSON, "json", false, "output JSON")
 	flag.Parse()
 
-	repoRoot := findRepoRoot()
+	repoRoot := reporoot.Find()
 	if schemaFile == "" {
 		schemaFile = filepath.Join(repoRoot, "pkg/storage/postgres/tenant_schema.sql")
 	}
@@ -777,21 +779,4 @@ func pct(part, total int) float64 {
 		return 0
 	}
 	return float64(part) / float64(total) * 100
-}
-
-func findRepoRoot() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "."
-		}
-		dir = parent
-	}
 }

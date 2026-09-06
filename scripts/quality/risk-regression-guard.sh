@@ -208,7 +208,10 @@ for label in "${labels[@]}"; do
         'npm --prefix web run typecheck && if command -v stratum-verify >/dev/null 2>&1; then stratum-verify frontend-test; else npm --prefix web test -- --run --maxWorkers=2; fi'
       ;;
     frontend-supply-chain)
-      run_check "${label}" npm --prefix web audit --audit-level=high
+      # npm 官方 2026-09 退役 registry 的 quick-audit 端点(/-/npm/v1/security/
+      # audits/quick → 400)；Node 22 自带 npm 10 仍打该端点。用 npm@latest
+      # 跑 audit(走 bulk advisory 端点),等价审计语义,不依赖 runner npm 版本。
+      run_check "${label}" npx --yes npm@latest --prefix web audit --audit-level=high
       ;;
     tool-permissions)
       run_check "${label}" make tool-permission-test

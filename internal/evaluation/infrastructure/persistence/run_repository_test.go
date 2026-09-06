@@ -87,6 +87,42 @@ func TestSanitizeTools(t *testing.T) {
 	require.Nil(t, domain.SanitizeTools(nil))
 }
 
+// TestSanitizeSessionTurns 验证会话逐轮证据落库前的脱敏（与单轮同 spec §6.5 红线）：
+// 每轮 Output 走 SanitizeValue、Tools 走 SanitizeTools；敏感 arguments/raw_text/输出内
+// 键值被替换，非敏感轮原样保留，不修改入参，nil/空原样返回。
+func TestSanitizeSessionTurns(t *testing.T) {
+	turns := []domain.SessionTurnEvidence{
+		{
+			Index:   0,
+			Output:  "tool reported api_key=leak-token",
+			TraceID: "tr-0",
+			Tools: []domain.ToolObservation{
+				{
+					ToolName:  "web_search",
+					Arguments: map[string]any{"query": "stratum", "api_key": "secret-key"},
+					RawText:   "web_search(query='stratum', api_key='secret-key')",
+				},
+			},
+		},
+		{Index: 1, User: "final", Output: "done", Tokens: 8},
+	}
+
+	got := sanitizeSessionTurns(turns)
+	require.Len(t, got, 2)
+	// 逐轮 Output 与 Tools 已脱敏。
+	require.NotContains(t, got[0].Output, "leak-token")
+	require.Equal(t, "[REDACTED]", got[0].Tools[0].Arguments["api_key"])
+	require.NotContains(t, got[0].Tools[0].RawText, "secret-key")
+	// 非敏感轮原样保留；非工具/元数据字段原样。
+	require.Equal(t, turns[1], got[1])
+	require.Equal(t, "tr-0", got[0].TraceID)
+	require.Equal(t, 0, got[0].Index)
+	// 不修改入参。
+	require.Equal(t, "secret-key", turns[0].Tools[0].Arguments["api_key"])
+	require.Nil(t, sanitizeSessionTurns(nil))
+	require.Empty(t, sanitizeSessionTurns([]domain.SessionTurnEvidence{}))
+}
+
 // TestPgRunRepository_dimensionsFailureReasonRoundTrip 验证 SaveRun 写入
 // dimensions/failure_reason 后 GetRun 能读回相等（spec §6.2 多维分数与失败归因）。
 func TestPgRunRepository_dimensionsFailureReasonRoundTrip(t *testing.T) {
@@ -131,7 +167,7 @@ func TestPgRunRepository_dimensionsFailureReasonRoundTrip(t *testing.T) {
 			`[{"name":"correctness","score":1,"passed":true,"reason":"ok"}]`, "assert failed",
 			`{"cost_usd":0.05,"latency_ms":250,"success":false,`+
 				`"security_violation":true,"tool_call_count":4,"tool_error_count":2}`,
-			false, "", "[]").
+			false, "", "[]", "[]").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	writeMock.ExpectCommit()
 	writeRepo := &PgRunRepository{pool: writeMock}
@@ -151,12 +187,12 @@ func TestPgRunRepository_dimensionsFailureReasonRoundTrip(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"case_id", "passed", "actual_output", "message", "error_message", "trace_id",
 			"tokens", "cost_usd", "duration_ms", "dimensions", "failure_reason", "trace_evidence",
-			"process_pass", "process_failure", "tool_sequence",
+			"process_pass", "process_failure", "tool_sequence", "turns",
 		}).AddRow("case-1", true, []byte(`{"ok":true}`), "m", "", "tr-1", 5, 0.1, 2,
 			[]byte(`[{"name":"correctness","score":1,"passed":true,"reason":"ok"}]`), "assert failed",
 			[]byte(`{"cost_usd":0.05,"latency_ms":250,"success":false,`+
 				`"security_violation":true,"tool_call_count":4,"tool_error_count":2}`),
-			false, "", []byte("[]")))
+			false, "", []byte("[]"), []byte("[]")))
 	readMock.ExpectCommit()
 	readRepo := &PgRunRepository{pool: readMock}
 	got, found, err := readRepo.GetRun(context.Background(), "t1", "run-rt")
@@ -224,7 +260,7 @@ func TestPgRunRepository_processAndToolRoundTrip(t *testing.T) {
 	writeMock.ExpectExec("INSERT INTO eval_case_results").
 		WithArgs("case-pt", "run-pt", "case-1", true, `{"ok":true}`, "m", "", "tr-1", 5, 0.1, 2,
 			"[]", "", "null",
-			true, "process:must_not_call:delete", string(toolSeqJSON)).
+			true, "process:must_not_call:delete", string(toolSeqJSON), "[]").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	writeMock.ExpectCommit()
 	writeRepo := &PgRunRepository{pool: writeMock}
@@ -244,10 +280,10 @@ func TestPgRunRepository_processAndToolRoundTrip(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"case_id", "passed", "actual_output", "message", "error_message", "trace_id",
 			"tokens", "cost_usd", "duration_ms", "dimensions", "failure_reason", "trace_evidence",
-			"process_pass", "process_failure", "tool_sequence",
+			"process_pass", "process_failure", "tool_sequence", "turns",
 		}).AddRow("case-1", true, []byte(`{"ok":true}`), "m", "", "tr-1", 5, 0.1, 2,
 			[]byte("[]"), "", []byte("null"),
-			true, "process:must_not_call:delete", toolSeqJSON))
+			true, "process:must_not_call:delete", toolSeqJSON, []byte("[]")))
 	readMock.ExpectCommit()
 	readRepo := &PgRunRepository{pool: readMock}
 	got, found, err := readRepo.GetRun(context.Background(), "t1", "run-pt")
@@ -257,6 +293,102 @@ func TestPgRunRepository_processAndToolRoundTrip(t *testing.T) {
 	require.True(t, got.Results[0].ProcessPass)
 	require.Equal(t, run.Results[0].ProcessFailure, got.Results[0].ProcessFailure)
 	require.Equal(t, sanitized, got.Results[0].Tools)
+	require.NoError(t, readMock.ExpectationsWereMet())
+}
+
+// TestPgRunRepository_sessionTurnEvidenceRoundTrip 验证 SaveRun 写入会话剧本逐轮
+// 证据 turns（阶段 B，含逐轮工具调用观测）后 GetRun 能读回相等；turns 落库前经
+// sanitizeSessionTurns 脱敏（与单轮同 spec §6.5 红线），落库值 = 脱敏后 Marshal，
+// 读侧 '[]' 守卫保持 nil Turns 自洽。
+func TestPgRunRepository_sessionTurnEvidenceRoundTrip(t *testing.T) {
+	writeMock := newMockRepo(t)
+	readMock := newMockRepo(t)
+	now := time.Now()
+	turns := []domain.SessionTurnEvidence{
+		{
+			Index:      0,
+			User:       "solve the task step by step",
+			Output:     "I will search first",
+			TraceID:    "turn-tr-0",
+			Tokens:     12,
+			CostUSD:    0.003,
+			DurationMs: 340,
+			Tools: []domain.ToolObservation{
+				{
+					ToolName:     "web_search",
+					ToolType:     "search",
+					StepIndex:    0,
+					ProviderType: "openai",
+					CapabilityID: "cap-1",
+					Arguments:    map[string]any{"query": "stratum", "api_key": "secret-key"},
+					RawText:      "web_search(query='stratum', api_key='secret-key')",
+				},
+			},
+		},
+		{Index: 1, User: "now produce the final answer", Output: "done", Tokens: 8, CostUSD: 0.001, DurationMs: 120},
+	}
+	sanitizedTurns := sanitizeSessionTurns(turns)
+	turnsJSON, err := json.Marshal(sanitizedTurns)
+	require.NoError(t, err)
+
+	run := domain.EvalRun{
+		ID:              "run-tn",
+		Resource:        domain.ResourceRef{Kind: "prompt", ResourceID: "r-1", RevisionID: "rev-1"},
+		SuiteRevisionID: "s-1",
+		Passed:          true,
+		TotalCases:      1,
+		PassedCases:     1,
+		Metrics:         map[string]any{"pass_rate": 1.0},
+		CreatedAt:       now,
+		Results: []domain.EvalCaseResult{
+			{
+				ID: "case-tn", CaseID: "case-1", Passed: true,
+				Actual: map[string]any{"ok": true},
+				Turns:  turns,
+			},
+		},
+	}
+
+	// SaveRun 侧：turns 经 sanitizeSessionTurns 脱敏（Output→SanitizeValue、
+	// Tools→SanitizeTools，spec §6.5 同单轮红线）后序列化为 JSON 数组文本；
+	// 落库值 = 脱敏后 Marshal（含敏感 Arguments/RawText 的 fixture 被替换）。
+	expectTenantTx(writeMock)
+	writeMock.ExpectExec("INSERT INTO eval_runs").
+		WithArgs("run-tn", "prompt", "r-1", "rev-1", "s-1", true, 1, 1, `{"pass_rate":1}`, "{}", "", now).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	writeMock.ExpectExec("INSERT INTO eval_case_results").
+		WithArgs("case-tn", "run-tn", "case-1", true, `{"ok":true}`, "", "", "", 0, 0.0, 0,
+			"[]", "", "null", false, "", "[]", string(turnsJSON)).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	writeMock.ExpectCommit()
+	writeRepo := &PgRunRepository{pool: writeMock}
+	require.NoError(t, writeRepo.SaveRun(context.Background(), "t1", run))
+	require.NoError(t, writeMock.ExpectationsWereMet())
+
+	// GetRun 侧：turns 读回反序列化，与写入相等。
+	expectTenantTx(readMock)
+	readMock.ExpectQuery("SELECT id, resource_kind, resource_id, revision_id, suite_revision_id").
+		WithArgs("run-tn").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "resource_kind", "resource_id", "revision_id", "suite_revision_id",
+			"passed", "total_cases", "passed_cases", "metrics", "context_snapshot", "created_by", "created_at",
+		}).AddRow("run-tn", "prompt", "r-1", "rev-1", "s-1", true, 1, 1,
+			[]byte(`{"pass_rate":1}`), []byte("{}"), "creator-1", now))
+	readMock.ExpectQuery("SELECT case_id, passed, actual_output").
+		WithArgs("run-tn").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"case_id", "passed", "actual_output", "message", "error_message", "trace_id",
+			"tokens", "cost_usd", "duration_ms", "dimensions", "failure_reason", "trace_evidence",
+			"process_pass", "process_failure", "tool_sequence", "turns",
+		}).AddRow("case-1", true, []byte(`{"ok":true}`), "", "", "", 0, 0.0, 0,
+			[]byte("[]"), "", []byte("null"), false, "", []byte("[]"), turnsJSON))
+	readMock.ExpectCommit()
+	readRepo := &PgRunRepository{pool: readMock}
+	got, found, err := readRepo.GetRun(context.Background(), "t1", "run-tn")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, got.Results, 1)
+	require.Equal(t, sanitizedTurns, got.Results[0].Turns)
 	require.NoError(t, readMock.ExpectationsWereMet())
 }
 
@@ -329,7 +461,7 @@ func TestRunRoundTripSnapshot(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"case_id", "passed", "actual_output", "message", "error_message", "trace_id",
 			"tokens", "cost_usd", "duration_ms", "dimensions", "failure_reason", "trace_evidence",
-			"process_pass", "process_failure", "tool_sequence",
+			"process_pass", "process_failure", "tool_sequence", "turns",
 		}))
 	readMock.ExpectCommit()
 	readRepo := &PgRunRepository{pool: readMock}
@@ -360,7 +492,7 @@ func TestRunRoundTripSnapshotEmptyJSON(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"case_id", "passed", "actual_output", "message", "error_message", "trace_id",
 			"tokens", "cost_usd", "duration_ms", "dimensions", "failure_reason", "trace_evidence",
-			"process_pass", "process_failure", "tool_sequence",
+			"process_pass", "process_failure", "tool_sequence", "turns",
 		}))
 	mock.ExpectCommit()
 

@@ -54,7 +54,7 @@ func exerciseAllMetrics(m MetricsProvider) {
 	m.IncHermesEvent("memory.raw")
 	m.IncHermesEventProcessed("memory.raw", "ok")
 	// Agent KPI (F3)
-	m.IncAgentTaskCompleted("agent-1", "react", "proposal", "ok")
+	m.IncAgentTaskCompleted("agent-1", "react", "proposal", "ok", "tenant-1")
 	m.RecordAgentTaskLatency("agent-1", "proposal", 1.0)
 	m.RecordAgentCostPerTask("agent-1", "proposal", 0.01)
 	m.RecordAgentEvalScore("agent-1", "accuracy", 0.9)

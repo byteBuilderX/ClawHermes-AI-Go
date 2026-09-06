@@ -267,6 +267,12 @@ const (
 	MemorySupersededRetention  = 90 * 24 * time.Hour // purge superseded after 90 days
 )
 
+// MemoryModelConfig — 记忆模型参数完备性探针周期。探针与流量无关，周期比对
+// 平台参数值与 enabled 模型目录，使「模型未配置/被禁用」在零流量下也能告警。
+const (
+	MemoryModelConfigProbeInterval = 5 * time.Minute
+)
+
 // MemoryMigration — 记忆嵌入模型平滑迁移（P5）回填 worker 与成本预览参数。
 const (
 	// MemoryMigrationScanInterval 回填 worker 轮询所有租户待处理迁移的间隔。

@@ -17,10 +17,10 @@ interface SourceCardListProps {
 const MAX_CARDS = 8;
 
 const renderScore = (s: ChatCitationSource) => {
-  if (!s.HasScore || typeof s.Score !== 'number') return null;
+  if (!s.hasScore || typeof s.score !== 'number') return null;
   return (
     <Badge
-      count={`${(s.Score * 100).toFixed(1)}%`}
+      count={`${(s.score * 100).toFixed(1)}%`}
       style={{ background: '#52c41a', fontSize: 11 }}
     />
   );
@@ -39,15 +39,15 @@ export const SourceCardList = ({ sources }: SourceCardListProps) => {
       </Text>
       <Space direction="vertical" style={{ width: '100%' }} size={6}>
         {list.map((s, i) => {
-          const title = s.DocumentTitle || s.DocumentID || '未知文档';
-          const workspaceName = s.WorkspaceName || '';
-          const previewable = Boolean(workspaceName && s.DocumentID);
+          const title = s.documentTitle || s.documentId || '未知文档';
+          const workspaceName = s.workspaceName || '';
+          const previewable = Boolean(workspaceName && s.documentId);
           return (
             <div
-              key={s.ChunkID || s.DocumentID || i}
+              key={s.chunkId || s.documentId || i}
               onClick={
                 previewable
-                  ? () => setPreview({ name: workspaceName, documentID: s.DocumentID!, title })
+                  ? () => setPreview({ name: workspaceName, documentID: s.documentId!, title })
                   : undefined
               }
               style={{
@@ -72,13 +72,13 @@ export const SourceCardList = ({ sources }: SourceCardListProps) => {
                 </Text>
                 {renderScore(s)}
               </Space>
-              {s.Snippet && (
+              {s.snippet && (
                 <Paragraph
                   ellipsis={{ rows: 2 }}
                   type="secondary"
                   style={{ margin: 0, fontSize: 12, color: '#8c8c8c' }}
                 >
-                  {s.Snippet}
+                  {s.snippet}
                 </Paragraph>
               )}
             </div>

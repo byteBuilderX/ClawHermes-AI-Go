@@ -54,7 +54,7 @@ type MetricsProvider interface {
 	IncHermesEventProcessed(eventType, status string)
 
 	// Agent KPI (F3)
-	IncAgentTaskCompleted(agentID, agentType, taskKind, outcome string)
+	IncAgentTaskCompleted(agentID, agentType, taskKind, outcome, tenantID string)
 	RecordAgentTaskLatency(agentID, taskKind string, seconds float64)
 	RecordAgentCostPerTask(agentID, taskKind string, costUSD float64)
 	RecordAgentEvalScore(agentID, metric string, score float64)
@@ -194,7 +194,7 @@ func (NoopMetrics) DecKnowledgeIngestInFlight()                                 
 func (NoopMetrics) IncKnowledgeEmbedUnavailable(_ string)                         {}
 func (NoopMetrics) IncHermesEvent(_ string)                                       {}
 func (NoopMetrics) IncHermesEventProcessed(_, _ string)                           {}
-func (NoopMetrics) IncAgentTaskCompleted(_, _, _, _ string)                       {}
+func (NoopMetrics) IncAgentTaskCompleted(_, _, _, _, _ string)                    {}
 func (NoopMetrics) RecordAgentTaskLatency(_, _ string, _ float64)                 {}
 func (NoopMetrics) RecordAgentCostPerTask(_, _ string, _ float64)                 {}
 func (NoopMetrics) RecordAgentEvalScore(_, _ string, _ float64)                   {}

@@ -380,6 +380,53 @@ spec:
             description: More than 10 route fallbacks in the last fifteen minutes ({{ $labels.from_model }} -> {{ $labels.to_model }}, increase {{ $value }}).
             dashboard_url: /d/stratum-service-overview
             runbook_url: /docs/operations/alerts/business.md#route-fallback-surge
+
+    # memory 模型参数强制化告警：必需模型参数（platform 层 7 个 memory.*_model）
+    # 缺失/指向未启用模型时，运行期 fail-closed + 探针周期完备性上报。与流量无关，
+    # 即使零流量也持续亮灯，直到运维补齐配置或关闭对应消费组件。
+    - name: stratum-memory-model-config
+      rules:
+        - alert: StratumMemoryModelParamMissing
+          expr: memory_model_config_health{state="missing"} == 1
+          for: 10m
+          labels:
+            severity: warning
+            service: stratum
+            environment: remote-test
+            component: memory
+          annotations:
+            summary: 必需 memory 模型参数未配置
+            description: Memory 必需模型参数 {{ $labels.param }} 为空/未配置，运行期将 fail-closed。
+            dashboard_url: /d/stratum-service-overview
+            runbook_url: /docs/operations/alerts/business.md#memory-model-param-missing
+
+        - alert: StratumMemoryModelParamDisabled
+          expr: memory_model_config_health{state="disabled"} == 1
+          for: 10m
+          labels:
+            severity: warning
+            service: stratum
+            environment: remote-test
+            component: memory
+          annotations:
+            summary: 必需 memory 模型参数指向未启用模型
+            description: Memory 必需模型参数 {{ $labels.param }} 配置的模型不在 enabled 目录，运行期将 fail-closed。
+            dashboard_url: /d/stratum-service-overview
+            runbook_url: /docs/operations/alerts/business.md#memory-model-param-disabled
+
+        - alert: StratumMemoryModelConfigFailed
+          expr: increase(memory_model_config_errors_total[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: stratum
+            environment: remote-test
+            component: memory
+          annotations:
+            summary: 记忆步骤因模型配置缺失 fail-closed
+            description: Memory {{ $labels.stage }} 因 {{ $labels.param }} {{ $labels.state }} 失败 {{ $value }} 次。
+            dashboard_url: /d/stratum-service-overview
+            runbook_url: /docs/operations/alerts/business.md#memory-model-config-failed
     - name: stratum-availability
       rules:
         - alert: StratumPublicEndpointDown
@@ -709,6 +756,23 @@ spec:
               T4 红线级：按 runbook 立即人工确认并处置。
             dashboard_url: https://stratum.grafana/d/evaluation
             runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-rule-blocked
+        - alert: StratumEvalRuleDisabled
+          expr: |
+            increase(eval_rule_hit_total{verdict="detected"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: evaluation
+            component: runtime-observation
+            environment: remote-test
+          annotations:
+            summary: 规则护栏命中但未拦截
+            description: >-
+              检测到规则护栏命中但未拦截：evaluation.ruleguard.enabled=false 但 denylist 非空，
+              命中 verdict=detected 持续 5 分钟。护栏当前只检测不拦截，命中工具照常执行。若该
+              工具应禁用，请开启 evaluation.ruleguard.enabled；否则收紧 denylist 移除误报。
+            dashboard_url: https://stratum.grafana/d/evaluation
+            runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-rule-disabled
         - alert: StratumEvalJudgeDegraded
           # 事件计数阈值而非瞬时 rate>0：任一 30 分钟窗口内 judge_unavailable 累计 ≥ 3 次
           # 且持续 15 分钟才告警，隔离单次瞬时抖动。恢复后需等失败事件滚出窗口自动消除。
@@ -759,6 +823,75 @@ spec:
             description: "待评审条目持续 > 50 达 15 分钟，低置信/判异样本滞留，需人工介入。"
             dashboard_url: "{{ $externalURL }}"
             runbook_url: /docs/runbooks/stratum-eval-review-backlog.md#stratum-eval-review-backlog-high
+        - alert: StratumEvalJudgeBelowThreshold
+          expr: |
+            increase(eval_gate_action_total{layer="detect",action="flag"}[15m]) > 0 OR (sum(rate(eval_judge_score_bucket{le="0.5"}[10m])) / clamp_min(sum(rate(eval_judge_score_count[10m])), 1)) > 0.3
+          for: 10m
+          labels:
+            severity: warning
+            service: evaluation
+            component: runtime-observation
+            environment: remote-test
+          annotations:
+            summary: judge 跌阈判定升高（低分尾部占比超阈值）
+            description: >-
+              judge 单维度低于 JudgeBelowThreshold 的判异升高：detect/flag 计数 15 分钟
+              increase &gt; 0，或 eval_judge_score 直方图 &lt;0.5 尾部占比 &gt; 30%（10 分钟
+              窗口）。第一腿信号现网即燃（applyAnomalyVerdict emit layer=detect action=flag）。
+              到评测中心下钻对应 trace，人工确认真退化后走参数/版本调整。
+            dashboard_url: https://stratum.grafana/d/evaluation
+            runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-judge-below-threshold
+        - alert: StratumEvalRunRegression
+          expr: |
+            increase(eval_gate_action_total{layer="l2",action="regression"}[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: evaluation
+            component: runtime-observation
+            environment: remote-test
+          annotations:
+            summary: run 级回归劣化判异
+            description: >-
+              run 级回归判异出现（layer=l2 action=regression，15 分钟 increase &gt; 0）。
+              P2 该 label 值仅由发布哨兵判劣 emit（Task 5），T13 确认 run 复用；规则先落、当前
+              只读待命。到评测中心对比 base vs current run 的 by_dimension 并人工确认。
+            dashboard_url: https://stratum.grafana/d/evaluation
+            runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-run-regression
+        - alert: StratumEvalMultiTenantVerifyNotRecovered
+          expr: |
+            increase(eval_gate_action_total{layer="l3_multitenant_verify",action="not_recovered"}[30m]) >= 1
+          for: 5m
+          labels:
+            severity: critical
+            service: evaluation
+            component: l3-plus-platform
+            environment: remote-test
+          annotations:
+            summary: 平台回滚后多租户验证存在未恢复租户（当前 {{ $value }}）
+            description: >-
+              平台版本回滚后 multi-tenant verify 判定 ≥ 1 个租户 not_recovered（回滚后
+              该租户表现仍劣于回滚前），持续 5 分钟。平台参数影响全租户，属 T4 红线级；
+              按 runbook 立即人工确认并处置。
+            dashboard_url: https://stratum.grafana/d/evaluation
+            runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-multitenant-verify-not-recovered
+        - alert: StratumEvalPlatformMultiTenantDivergence
+          expr: |
+            increase(eval_gate_action_total{layer="l3_multitenant_verify",action="not_recovered"}[30m]) > 0
+              AND increase(eval_gate_action_total{layer="l3_multitenant_verify",action="recovered"}[30m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: evaluation
+            component: l3-plus-platform
+            environment: remote-test
+          annotations:
+            summary: 平台版本多租户验证出现分化（多数恢复 / 少数未恢复）
+            description: >-
+              同一平台版本窗口内 recovered 与 not_recovered 并存（多数改善少数劣化分布效应，
+              spec §3.4-4 / §9.4.2）。仅信号告警不做自动处置；劣化租户名单供人工在归因视图下钻。
+            dashboard_url: https://stratum.grafana/d/evaluation
+            runbook_url: /docs/operations/alerts/stratum-evaluation.md#stratum-eval-platform-multitenant-divergence
     - name: stratum-http-recording
       interval: 1m
       rules:

@@ -94,23 +94,57 @@ describe('useEvaluationCenter', () => {
     expect(api.rejectCandidate).not.toHaveBeenCalled();
   });
 
-  it('creates a suite and enqueues its baseline run before refreshing', async () => {
+  it('create mode builds a suite, publishes v1 and enqueues the baseline run before refreshing', async () => {
     auth.role = 'admin';
     api.createSuite.mockResolvedValue({ suite: { id: 'suite-1' }, revision: { id: 'draft-revision-1' } });
     api.publishSuite.mockResolvedValue({ id: 'suite-revision-1' });
     api.enqueueRun.mockResolvedValue({ job_id: 'job-1', status: 'queued' });
     const { result } = renderHook(() => useEvaluationCenter());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    const job = await act(async () => result.current.createEvaluation({
-      resource: { kind: 'skill', resource_id: 'skill-1', revision_id: 'revision-1' }, name: '基线评测',
-      description: '发布前基线', cases: [{ name: '问候', input: '你好', expected_output: '您好',
-        assertion_mode: 'contains', enabled: true }],
-    }));
+    const job = await act(async () => result.current.createEvaluation(createInput()));
     expect(api.createSuite).toHaveBeenCalledWith(expect.objectContaining({ name: '基线评测', resourceKind: 'skill' }));
     expect(api.publishSuite).toHaveBeenCalledWith('suite-1');
     expect(api.enqueueRun).toHaveBeenCalledWith(expect.objectContaining({ resource_id: 'skill-1' }),
       'suite-revision-1', expect.any(String));
     expect(job).toEqual({ job_id: 'job-1', status: 'queued' });
+  });
+
+  it('published mode enqueues the existing revision directly without suite writes', async () => {
+    auth.role = 'admin';
+    api.enqueueRun.mockResolvedValue({ job_id: 'job-1', status: 'queued' });
+    const { result } = renderHook(() => useEvaluationCenter());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const job = await act(async () => result.current.createEvaluation(publishedInput()));
+    expect(api.createSuite).not.toHaveBeenCalled();
+    expect(api.publishSuite).not.toHaveBeenCalled();
+    expect(api.enqueueRun).toHaveBeenCalledTimes(1);
+    expect(api.enqueueRun).toHaveBeenCalledWith(
+      { kind: 'skill', resource_id: 'skill-1', revision_id: 'revision-1' }, 'published-revision-2', expect.any(String));
+    expect(job).toEqual({ job_id: 'job-1', status: 'queued' });
+  });
+
+  it('unpublished mode publishes the draft suite v1 before enqueuing the run', async () => {
+    auth.role = 'admin';
+    api.publishSuite.mockResolvedValue({ id: 'published-u1' });
+    api.enqueueRun.mockResolvedValue({ job_id: 'job-1', status: 'queued' });
+    const { result } = renderHook(() => useEvaluationCenter());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const job = await act(async () => result.current.createEvaluation(unpublishedInput()));
+    expect(api.createSuite).not.toHaveBeenCalled();
+    expect(api.publishSuite).toHaveBeenCalledWith('suite-u1');
+    expect(api.enqueueRun).toHaveBeenCalledTimes(1);
+    expect(api.enqueueRun).toHaveBeenCalledWith(
+      { kind: 'skill', resource_id: 'skill-1', revision_id: 'revision-1' }, 'published-u1', expect.any(String));
+    expect(job).toEqual({ job_id: 'job-1', status: 'queued' });
+  });
+
+  it('refuses createEvaluation for members before any API call', async () => {
+    const { result } = renderHook(() => useEvaluationCenter());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await expect(result.current.createEvaluation(publishedInput())).rejects.toThrow('仅租户管理员可执行评测命令');
+    expect(api.createSuite).not.toHaveBeenCalled();
+    expect(api.publishSuite).not.toHaveBeenCalled();
+    expect(api.enqueueRun).not.toHaveBeenCalled();
   });
 
   it('resumes at publish after publish failure without recreating the suite', async () => {
@@ -120,7 +154,7 @@ describe('useEvaluationCenter', () => {
     api.enqueueRun.mockResolvedValue({ job_id: 'job-1', status: 'queued' });
     const { result } = renderHook(() => useEvaluationCenter());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    const data = evaluationInput();
+    const data = createInput();
     await act(async () => { await result.current.createEvaluation(data).catch(() => undefined); });
     await act(async () => { await result.current.createEvaluation(data); });
     expect(api.createSuite).toHaveBeenCalledTimes(1);
@@ -135,10 +169,25 @@ describe('useEvaluationCenter', () => {
     api.enqueueRun.mockRejectedValueOnce(new Error('入队失败')).mockResolvedValue({ job_id: 'job-1', status: 'queued' });
     const { result } = renderHook(() => useEvaluationCenter());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    const data = evaluationInput();
+    const data = createInput();
     await act(async () => { await result.current.createEvaluation(data).catch(() => undefined); });
     await act(async () => { await result.current.createEvaluation(data); });
     expect(api.createSuite).toHaveBeenCalledTimes(1);
+    expect(api.publishSuite).toHaveBeenCalledTimes(1);
+    expect(api.enqueueRun).toHaveBeenCalledTimes(2);
+    expect(api.enqueueRun.mock.calls[0][2]).toBe(api.enqueueRun.mock.calls[1][2]);
+  });
+
+  it('does not republish the draft suite when retrying an unpublished run after enqueue failure', async () => {
+    auth.role = 'admin';
+    api.publishSuite.mockResolvedValue({ id: 'published-u1' });
+    api.enqueueRun.mockRejectedValueOnce(new Error('入队失败')).mockResolvedValue({ job_id: 'job-1', status: 'queued' });
+    const { result } = renderHook(() => useEvaluationCenter());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const data = unpublishedInput();
+    await act(async () => { await result.current.createEvaluation(data).catch(() => undefined); });
+    await act(async () => { await result.current.createEvaluation(data); });
+    expect(api.createSuite).not.toHaveBeenCalled();
     expect(api.publishSuite).toHaveBeenCalledTimes(1);
     expect(api.enqueueRun).toHaveBeenCalledTimes(2);
     expect(api.enqueueRun.mock.calls[0][2]).toBe(api.enqueueRun.mock.calls[1][2]);
@@ -151,8 +200,8 @@ describe('useEvaluationCenter', () => {
     const { result } = renderHook(() => useEvaluationCenter());
     await waitFor(() => expect(result.current.loading).toBe(false));
     let first!: Promise<unknown>; let second!: Promise<unknown>;
-    act(() => { first = result.current.createEvaluation(evaluationInput());
-      second = result.current.createEvaluation(evaluationInput()); });
+    act(() => { first = result.current.createEvaluation(createInput());
+      second = result.current.createEvaluation(createInput()); });
     expect(api.createSuite).toHaveBeenCalledTimes(1);
     create.resolve({ suite: { id: 'suite-1' } });
     api.publishSuite.mockResolvedValue({ id: 'published-1' });
@@ -213,8 +262,13 @@ describe('useEvaluationCenter', () => {
   });
 });
 
-const evaluationInput = () => ({
-  resource: { kind: 'skill' as const, resource_id: 'skill-1', revision_id: 'revision-1' }, name: '基线评测',
+const baseResource = { kind: 'skill' as const, resource_id: 'skill-1', revision_id: 'revision-1' };
+// create 计划：内联建套件 → publish v1 → enqueue（沿用旧「内联 1 case 即跑」升级语义）。
+const createInput = () => ({ mode: 'create' as const, resource: baseResource, name: '基线评测',
   description: '发布前基线', cases: [{ name: '问候', input: '你好', expected_output: '您好',
-    assertion_mode: 'contains' as const, enabled: true }],
-});
+    assertion_mode: 'contains' as const, enabled: true }] });
+// published 计划：直接跑既有 published revision（纯读）。
+const publishedInput = () => ({ mode: 'published' as const, resource: baseResource, suiteId: 'suite-p1',
+  revisionId: 'published-revision-2' });
+// unpublished 计划：先 publish 草稿套件成 v1 再跑。
+const unpublishedInput = () => ({ mode: 'unpublished' as const, resource: baseResource, suiteId: 'suite-u1' });

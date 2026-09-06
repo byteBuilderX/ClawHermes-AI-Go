@@ -79,6 +79,33 @@ func (s *fakePlatformStore) ListVersions(_ context.Context, groupKey string) ([]
 	return []port.PlatformVersion{}, nil
 }
 
+// GetVersion/UpdateEvalState 补齐接口（分层门禁 P1）：eval_state 是 DB 独立列，
+// 桩用真实 EvalState 字段写（与 DB 独立列语义一致）；仅需要存在性 + ErrVersionNotFound 语义。
+func (s *fakePlatformStore) GetVersion(_ context.Context, groupKey string, versionSeq int64) (port.PlatformVersion, error) {
+	if s.err != nil {
+		return port.PlatformVersion{}, s.err
+	}
+	for _, v := range s.versions[groupKey] {
+		if int64(v.VersionSeq) == versionSeq {
+			return v, nil
+		}
+	}
+	return port.PlatformVersion{}, parametersdomain.ErrVersionNotFound
+}
+
+func (s *fakePlatformStore) UpdateEvalState(_ context.Context, groupKey string, versionSeq int64, state, _ string) error {
+	if s.err != nil {
+		return s.err
+	}
+	for i := range s.versions[groupKey] {
+		if int64(s.versions[groupKey][i].VersionSeq) == versionSeq {
+			s.versions[groupKey][i].EvalState = state
+			return nil
+		}
+	}
+	return parametersdomain.ErrVersionNotFound
+}
+
 // newTestTenantEmbeddingResolver 构造一个平台参数里含给定配置的
 // tenantEmbeddingModelResolver（值 key 为 "memory.embedding_model"），
 // registry 复用 knowledge 目录。

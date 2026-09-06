@@ -147,6 +147,11 @@ export const workflowVersionSummarySchema = z.object({
   version: z.number().int().positive(),
   name: z.string().min(1),
   description: z.string(),
+  // 发布者（版本历史「操作者」）：created_by 为原始 actor id；created_by_name 是服务端
+  // join public.users 现算的可读名（display_name>github_login>无命中留空），前端展示
+  // 优先 name、缺失回退 raw id。optional+default 兼容历史后端（缺字段时按空展示）。
+  created_by: z.string().optional().default(''),
+  created_by_name: z.string().optional().default(''),
   created_at: z.string(),
 });
 export type WorkflowVersionSummary = z.infer<typeof workflowVersionSummarySchema>;

@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default-unauth",
+    "method": "DELETE",
+    "path": "/memory/summaries/:id",
+    "body": {
+      "error": "missing bearer token"
+    },
+    "want_status": 401
+  }
+]

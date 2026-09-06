@@ -1,6 +1,14 @@
 package wiring
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	evaldomain "github.com/byteBuilderX/stratum/internal/evaluation/domain"
+	evalport "github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
+)
 
 func TestParsePromptRewritePatchesAcceptsFencedJSON(t *testing.T) {
 	patches, err := parsePromptRewritePatches("```json\n" +
@@ -100,5 +108,84 @@ func TestParseJudgeResponseNoDimensionsTolerated(t *testing.T) {
 	}
 	if got.Passed || len(got.Dimensions) != 0 {
 		t.Fatalf("old-style verdict must stay single: %+v", got)
+	}
+}
+
+// ——— evaluationResourceRouter session dispatch (stage B §5.4) ———
+
+// routerSessionRunnerStub 同时实现 ResourceAdapter + SessionRunner，记录分派透传。
+type routerSessionRunnerStub struct {
+	evidence   []evaldomain.SessionTurnEvidence
+	runErr     error
+	runTenant  string
+	lastScript evaldomain.EvalSessionScript
+}
+
+func (s *routerSessionRunnerStub) ExecuteRevision(context.Context, string, string, evaldomain.ResourceRef, evaldomain.EvalCase) (evalport.ExecutionResult, error) {
+	return evalport.ExecutionResult{}, errors.New("router stub: single-turn path not used by session test")
+}
+
+func (s *routerSessionRunnerStub) ResolveRevision(context.Context, string, evaldomain.ResourceRef) (evaldomain.ResourceRevision, error) {
+	return evaldomain.ResourceRevision{}, nil
+}
+
+func (s *routerSessionRunnerStub) SafeSummary(context.Context, string, evaldomain.ResourceRef) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (s *routerSessionRunnerStub) RunSession(_ context.Context, tenantID, _ string, _ evaldomain.ResourceRef, script evaldomain.EvalSessionScript) ([]evaldomain.SessionTurnEvidence, error) {
+	s.runTenant = tenantID
+	s.lastScript = script
+	return s.evidence, s.runErr
+}
+
+// routerSingleTurnStub 仅实现单轮 ResourceAdapter，用于验证会话分派对非
+// SessionRunner adapter 的 fail-close。
+type routerSingleTurnStub struct{}
+
+func (routerSingleTurnStub) ExecuteRevision(context.Context, string, string, evaldomain.ResourceRef, evaldomain.EvalCase) (evalport.ExecutionResult, error) {
+	return evalport.ExecutionResult{}, nil
+}
+
+func (routerSingleTurnStub) ResolveRevision(context.Context, string, evaldomain.ResourceRef) (evaldomain.ResourceRevision, error) {
+	return evaldomain.ResourceRevision{}, nil
+}
+
+func (routerSingleTurnStub) SafeSummary(context.Context, string, evaldomain.ResourceRef) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func TestEvaluationRouterRunSessionDispatchesToSessionRunner(t *testing.T) {
+	script := evaldomain.EvalSessionScript{Goal: "解答用户", Turns: []evaldomain.SessionTurn{{User: "开场"}}}
+	evidence := []evaldomain.SessionTurnEvidence{{Index: 0, User: "开场", Output: "out-0", TraceID: "trace-0"}}
+	session := &routerSessionRunnerStub{evidence: evidence}
+	router := evaluationResourceRouter{adapters: map[evaldomain.ResourceKind]evalport.ResourceAdapter{
+		evaldomain.ResourceKindAgent: session,
+	}}
+
+	got, err := router.RunSession(context.Background(), "tenant-1", "user-1",
+		evaldomain.ResourceRef{Kind: evaldomain.ResourceKindAgent, ResourceID: "agent-1", RevisionID: "revision-1"}, script)
+	if err != nil {
+		t.Fatalf("RunSession returned error: %v", err)
+	}
+	if len(got) != 1 || got[0].Output != "out-0" {
+		t.Fatalf("unexpected evidence: %+v", got)
+	}
+	if session.runTenant != "tenant-1" || len(session.lastScript.Turns) != 1 {
+		t.Fatalf("stub not driven with tenant/script: tenant=%q turns=%d",
+			session.runTenant, len(session.lastScript.Turns))
+	}
+}
+
+func TestEvaluationRouterRunSessionFailsClosedOnNonSessionRunner(t *testing.T) {
+	router := evaluationResourceRouter{adapters: map[evaldomain.ResourceKind]evalport.ResourceAdapter{
+		evaldomain.ResourceKindSkill: routerSingleTurnStub{},
+	}}
+
+	_, err := router.RunSession(context.Background(), "tenant-1", "user-1",
+		evaldomain.ResourceRef{Kind: evaldomain.ResourceKindSkill, ResourceID: "skill-1", RevisionID: "revision-1"},
+		evaldomain.EvalSessionScript{Goal: "g", Turns: []evaldomain.SessionTurn{{User: "开场"}}})
+	if err == nil || !strings.Contains(err.Error(), "session evaluation not supported") {
+		t.Fatalf("expected fail-close on non-SessionRunner adapter, got err=%v", err)
 	}
 }

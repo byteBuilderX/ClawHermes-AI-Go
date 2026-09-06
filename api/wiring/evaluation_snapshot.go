@@ -62,20 +62,24 @@ func (c snapshotCapturer) Capture(ctx context.Context, tenantID string, input ev
 			SkillRevisions:     map[string]string{},
 		},
 	}
-	evalGroup, err := c.captureGroup(ctx, evaldomain.GroupEvaluation)
+	evalGroup, err := c.captureGroup(ctx, evaldomain.GroupEvaluation, overrideSeq(input, evaldomain.GroupEvaluation))
 	if err != nil {
 		return nil, err
 	}
 	snap.Evaluation = evalGroup
-	agentGroup, err := c.captureGroup(ctx, evaldomain.GroupAgent)
+	agentGroup, err := c.captureGroup(ctx, evaldomain.GroupAgent, overrideSeq(input, evaldomain.GroupAgent))
 	if err != nil {
 		return nil, err
 	}
-	traceGroup, err := c.captureGroup(ctx, evaldomain.GroupTrace)
+	traceGroup, err := c.captureGroup(ctx, evaldomain.GroupTrace, overrideSeq(input, evaldomain.GroupTrace))
 	if err != nil {
 		return nil, err
 	}
-	snap.Execution = []evaldomain.GroupSnapshot{agentGroup, traceGroup}
+	memoryGroup, err := c.captureGroup(ctx, evaldomain.GroupMemory, overrideSeq(input, evaldomain.GroupMemory))
+	if err != nil {
+		return nil, err
+	}
+	snap.Execution = []evaldomain.GroupSnapshot{agentGroup, traceGroup, memoryGroup}
 	subject, pinnedID, err := c.loadSubject(ctx, tenantID, input.Resource)
 	if err != nil {
 		return nil, err
@@ -94,9 +98,19 @@ func (c snapshotCapturer) Capture(ctx context.Context, tenantID string, input ev
 	return snap, nil
 }
 
-// captureGroup 读一组 production label：IsCurrent 版本 → 复制 snapshot 值。
-// 未发布（无 IsCurrent）→ 空组（nil Values），执行时消费层默认适用。
-func (c snapshotCapturer) captureGroup(ctx context.Context, groupKey string) (evaldomain.GroupSnapshot, error) {
+// overrideSeq 返回该组在 CaptureInput 中的历史版本覆盖；无覆盖 → nil（现 IsCurrent 语义）。
+func overrideSeq(in evalport.CaptureInput, groupKey string) *int64 {
+	seq, ok := in.PlatformSeqOverrides[groupKey]
+	if !ok {
+		return nil
+	}
+	return &seq
+}
+
+// captureGroup 读一组平台版本：overrideSeq 非 nil 时精确匹配历史版本 seq（对照重放，
+// spec §4.3.4）；无命中回退 IsCurrent（版本归档/修剪后容忍，不回错误，裁决 R15）；
+// 全无 → 空组（nil Values），执行时消费层默认适用。
+func (c snapshotCapturer) captureGroup(ctx context.Context, groupKey string, overrideSeq *int64) (evaldomain.GroupSnapshot, error) {
 	if c.params == nil {
 		return evaldomain.GroupSnapshot{}, fmt.Errorf("capture %s group versions: parameters service unavailable", groupKey)
 	}
@@ -104,21 +118,38 @@ func (c snapshotCapturer) captureGroup(ctx context.Context, groupKey string) (ev
 	if err != nil {
 		return evaldomain.GroupSnapshot{}, fmt.Errorf("capture %s group versions: %w", groupKey, err)
 	}
+	if overrideSeq != nil {
+		for _, v := range versions {
+			if int64(v.VersionSeq) == *overrideSeq {
+				return c.groupFromVersion(groupKey, v.VersionSeq, v.Snapshot)
+			}
+		}
+		c.warn("capture override version missing, fallback to current",
+			zap.String("group_key", groupKey), zap.Int64("override_seq", *overrideSeq))
+	}
 	for _, v := range versions {
 		if !v.IsCurrent {
 			continue
 		}
-		values := make(map[string]any, len(v.Snapshot))
-		for k, raw := range v.Snapshot {
-			var decoded any
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				return evaldomain.GroupSnapshot{}, fmt.Errorf("capture %s snapshot decode %s: %w", groupKey, k, err)
-			}
-			values[k] = decoded
-		}
-		return evaldomain.GroupSnapshot{GroupKey: groupKey, VersionSeq: int64(v.VersionSeq), Values: values}, nil
+		return c.groupFromVersion(groupKey, v.VersionSeq, v.Snapshot)
 	}
 	return evaldomain.GroupSnapshot{GroupKey: groupKey}, nil
+}
+
+// groupFromVersion 复制单个平台版本快照为评测组快照（D1 值复制）。
+// 形参取已解开的 versionSeq/snapshot 两个值，而不是 Versions 返回元素的具名类型：
+// wiring 不 import parameters domain/application 具名类型（避免跨 context import 与
+// 测试 stub 复制负担），调用点拆字段传入，零 import 变动。
+func (c snapshotCapturer) groupFromVersion(groupKey string, versionSeq int, snapshot map[string]json.RawMessage) (evaldomain.GroupSnapshot, error) {
+	values := make(map[string]any, len(snapshot))
+	for k, raw := range snapshot {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return evaldomain.GroupSnapshot{}, fmt.Errorf("capture %s snapshot decode %s: %w", groupKey, k, err)
+		}
+		values[k] = decoded
+	}
+	return evaldomain.GroupSnapshot{GroupKey: groupKey, VersionSeq: int64(versionSeq), Values: values}, nil
 }
 
 // loadSubject 加载被测承载 agent revision：agent 资源读锁定 revision 的 payload；

@@ -34,6 +34,7 @@ type DefinitionService struct {
 	bindings     port.SkillBindingResolver
 	roles        port.TenantRoleResolver
 	editors      port.ResourceEditorRepo
+	nameResolver port.ActorNameResolver
 	logger       *zap.Logger
 }
 
@@ -95,6 +96,13 @@ func (s *DefinitionService) SetTenantRoleResolver(r port.TenantRoleResolver) {
 // SetEditorRepo 注入可编辑人白名单仓库。未注入时白名单成员路径 fail closed。
 func (s *DefinitionService) SetEditorRepo(r port.ResourceEditorRepo) {
 	s.editors = r
+}
+
+// SetActorNameResolver 注入发布者昵称解析器（iam 基础设施实现），由 wiring 装配，
+// 供版本历史「操作者」列展示。未注入时保留 raw id（降级）；注入后查询失败必须
+// 传播错误（fail-closed：禁止默认名掩盖查询故障）。
+func (s *DefinitionService) SetActorNameResolver(r port.ActorNameResolver) {
+	s.nameResolver = r
 }
 func (s *DefinitionService) Create(ctx context.Context, tenantID string, cmd CreateDefinitionCommand, actorID string) (*domain.Definition, error) {
 	definition, err := domain.NewDefinition(s.newID(), cmd.Name, cmd.Description, cmd.Spec, normalizeInputSchema(cmd.InputSchema))
@@ -282,6 +290,9 @@ func (s *DefinitionService) Publish(ctx context.Context, tenantID, id string, ac
 	if err != nil {
 		return nil, err
 	}
+	// 把发布者记录为版本 created_by（落库 + 返回体），使版本历史「操作者」可溯源；
+	// atomic 路径由 CreateNextVersion 从 ev.ActorID 注入，两条发布路径一致。
+	version.CreatedBy = actorID
 	if err := s.versions.CreateVersion(ctx, tenantID, version, ev); err != nil {
 		s.recordFailure(ctx, id, "publish", err)
 		return nil, err

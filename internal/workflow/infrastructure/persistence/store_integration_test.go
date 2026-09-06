@@ -63,10 +63,13 @@ func TestPgStoreStage1ALifecycleAndTenantIsolation(t *testing.T) {
 
 	version, err := def.Publish(uuid.NewString(), 1)
 	require.NoError(t, err)
+	// 发布者记为版本 created_by，落库后单版读回应保留该操作者（版本历史「操作者」）。
+	version.CreatedBy = "user-a"
 	require.NoError(t, store.CreateVersion(ctxA, tenantA, version, nil))
 	loadedVersion, err := store.GetVersion(ctxA, tenantA, version.ID)
 	require.NoError(t, err)
 	require.Equal(t, inputSchema, loadedVersion.InputSchema)
+	require.Equal(t, "user-a", loadedVersion.CreatedBy)
 	require.False(t, loadedVersion.CreatedAt.IsZero())
 	run, err := domain.NewRun(uuid.NewString(), version, map[string]any{"task": "hello", "region": "east"}, "key-1", "hash-1")
 	require.NoError(t, err)
