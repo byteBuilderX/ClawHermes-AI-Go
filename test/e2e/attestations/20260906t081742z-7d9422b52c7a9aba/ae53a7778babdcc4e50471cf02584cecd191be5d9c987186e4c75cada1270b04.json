@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "source_digest": "ae53a7778babdcc4e50471cf02584cecd191be5d9c987186e4c75cada1270b04",
+  "manifest_digest": "c5b3ec299b7ae2f1d67ada9db6b3e6fbdc4a72fa015c9fef65fd58f5f0c7e5f2",
+  "policy_manifest_digest": "bdb04afb6259aae36d41f861039d5f4b476ed3e33aaa2e7a47cded0ba74f59ce",
+  "tested_git_parent": "ac6cf01d8af8338bd89ce230ce6f569234ff84a9",
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "mode": "short",
+  "seed": 1,
+  "started_at": "2026-09-06T08:17:49.031Z",
+  "duration_seconds": 52,
+  "host_class": "developer",
+  "packs": [
+    {
+      "id": "evaluation",
+      "status": "passed"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "evaluation.mutation.get.evaluations.review",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.get.evaluations.review.id",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.candidates.candidateid.reject",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.pause",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.promote",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.experiments.experimentid.rollback",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.feedback",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.optimizations",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.review.id.decision",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.runs",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.mutation.post.evaluations.suites.suiteid.publish",
+      "status": "passed"
+    },
+    {
+      "id": "evaluation.route.evaluations",
+      "status": "passed"
+    }
+  ],
+  "action_count": 14,
+  "sequence_digest": "a7f083287ee9b1fedf40e1823d108734e24996545c36d1be66e7cb7f1fe23d29",
+  "evidence": {
+    "ui": 2,
+    "http": 2,
+    "database": 2,
+    "reconciled": 14
+  },
+  "artifacts": [],
+  "cleanup": {
+    "passed": true,
+    "residual_entity_ids": []
+  },
+  "unverified_capabilities": [],
+  "risk_classification": "short",
+  "status": "passed",
+  "run_topology": {
+    "run_id": "20260906t081742z-7d9422b52c7a9aba",
+    "host": "127.0.0.1",
+    "ports": {
+      "backend": 44723,
+      "fixture": 37497,
+      "frontend": 42015,
+      "oauth": 33797
+    },
+    "database_name": "stratum_e2e_20260906t081742z_7d9422b52c7a9aba"
+  },
+  "owned_cleanup": {
+    "database_dropped": true,
+    "lease_removed": true
+  },
+  "expires_at": "2026-09-09T08:18:48.572690224Z"
+}
