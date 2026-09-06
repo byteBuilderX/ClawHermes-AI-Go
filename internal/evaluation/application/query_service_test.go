@@ -33,6 +33,8 @@ func TestQueryServiceRejectsInvalidFilters(t *testing.T) {
 	svc := NewQueryService(&queryRepoStub{})
 	tests := []port.CenterFilter{
 		{ResourceKind: "invalid"},
+		{ResourceKind: "agent,workflow"},
+		{ResourceKind: "agent,"},
 		{Status: "invalid"},
 		{Cursor: "not-a-cursor"},
 		{Limit: -1},
@@ -40,6 +42,19 @@ func TestQueryServiceRejectsInvalidFilters(t *testing.T) {
 	for _, filter := range tests {
 		if _, err := svc.ListResources(context.Background(), "tenant-1", filter); !errors.Is(err, domain.ErrInvalidCenterQuery) {
 			t.Errorf("filter %+v error = %v, want invalid center query", filter, err)
+		}
+	}
+}
+
+// TestQueryServiceAcceptsCommaSeparatedResourceKinds 默认双轨 CSV 'agent,knowledge' 必须
+// 放行到仓库的 ANY(string_to_array) 谓词；单值四类保持可用（被测收敛回归：阻断曾出现在
+// 此层整串校验导致 agent,knowledge 被拒 400）。
+func TestQueryServiceAcceptsCommaSeparatedResourceKinds(t *testing.T) {
+	svc := NewQueryService(&queryRepoStub{})
+	tests := []string{"agent,knowledge", "agent", "knowledge", "skill", "mcp", "skill,mcp,agent,knowledge"}
+	for _, kinds := range tests {
+		if _, err := svc.ListResources(context.Background(), "tenant-1", port.CenterFilter{ResourceKind: kinds}); err != nil {
+			t.Errorf("ListResources resource_kind=%q error = %v, want accepted", kinds, err)
 		}
 	}
 }
