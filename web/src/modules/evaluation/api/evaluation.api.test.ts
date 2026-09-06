@@ -40,6 +40,18 @@ describe('evaluation center api', () => {
     });
   });
 
+  it('records manual feedback against the被测轨 resource kind', async () => {
+    client.post.mockResolvedValue({ data: { decision: 'ok' } });
+    await evaluationApi.recordFeedback({
+      resourceKind: 'agent', traceId: 'trace-1', resourceId: 'agent-1', score: 0.9,
+      outcome: { source: 'manual' }, idempotencyKey: 'idem-1',
+    });
+    expect(client.post).toHaveBeenCalledWith('/evaluations/feedback', {
+      trace_id: 'trace-1', resource_kind: 'agent', resource_id: 'agent-1', score: 0.9,
+      outcome: { source: 'manual' }, idempotency_key: 'idem-1',
+    });
+  });
+
   it('updates a session draft case with the full script and omits single-turn input', async () => {
     client.put.mockResolvedValue({ data: {
       id: 'c4', name: '退货会话', expected_output: '已受理退款', assertion_mode: 'contains', enabled: true,

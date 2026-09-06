@@ -1,7 +1,7 @@
 import { Form, Input, Modal, Radio, Select, Typography, message } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { CreateEvaluationPlan, EvaluationCase, ResourceRef, ResourceSummary } from '../model/evaluation';
+import type { CreateEvaluationPlan, EvaluationCase, ResourceKind, ResourceRef, ResourceSummary } from '../model/evaluation';
 
 import { AssertionModeField, CaseShapeField, JudgeSpecFields, StepJudgeFields, ToolSpecFields,
   type CaseAssertionMode, type CaseShape } from './CaseFields';
@@ -61,8 +61,10 @@ const formValuesToCase = (values: Values): EvaluationCase => {
 const resourceLabel = (item: ResourceSummary) =>
   `${String((item.safe_summary && item.safe_summary.name) || item.resource_id)}（${item.resource_id}）`;
 
-export const CreateEvaluationModal = ({ open, resources, onClose, onSubmit }: {
+export const CreateEvaluationModal = ({ open, resources, focusResource, onClose, onSubmit }: {
   open: boolean; resources: ResourceSummary[]; onClose: () => void; onSubmit: (plan: CreateEvaluationPlan) => void;
+  /** 登记并新建评测流程预选的目标资源（kind+resource_id）；列表刷新到位即预选对应行。 */
+  focusResource?: { kind: ResourceKind; resource_id: string };
 }) => {
   const [form] = Form.useForm<Values>();
   const [mode, setMode] = useState<CreateMode>('existing');
@@ -71,7 +73,10 @@ export const CreateEvaluationModal = ({ open, resources, onClose, onSubmit }: {
   // shape 决定新建态渲染单轮测试输入还是会话剧本编辑控件；initialValues 默认单轮。
   const shape = Form.useWatch('case_shape', form);
   const selectedResourceId = Form.useWatch('resource_id', form);
-  const selectableResources = resources.filter((item) => item.stable_revision_id);
+  // 目标资源仅限当前被测（agent/knowledge）：skill/mcp 退出被测后不再发起新评测，
+  // 历史行即便进入资源列表也不应出现在「新建评测」目标下拉。
+  const selectableResources = resources.filter((item) => item.stable_revision_id
+    && (item.resource_kind === 'agent' || item.resource_kind === 'knowledge'));
   const selectedResource = selectableResources.find((item) => item.id === selectedResourceId) || null;
 
   // 每次 open 重置内部选择与表单：清空资源选择、评测集 pick 并回到「已有评测集」模式，
@@ -82,6 +87,23 @@ export const CreateEvaluationModal = ({ open, resources, onClose, onSubmit }: {
     setPick(null);
     setMode('existing');
   }, [open, form]);
+
+  // 「登记并新建评测」预选目标资源：focusResource 指定 kind+resource_id，匹配
+  // selectableResources 中对应行；resources 由父级登记后刷新，迟到时本 effect 随其
+  // 更新自动补预选。仅对同一 focus key 应用一次，避免覆盖用户后续手动切换。
+  const focusAppliedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    if (!focusResource) { focusAppliedKeyRef.current = null; return; }
+    const key = `${focusResource.kind}:${focusResource.resource_id}`;
+    if (focusAppliedKeyRef.current === key) return;
+    const matched = selectableResources.find((item) =>
+      item.resource_kind === focusResource.kind && item.resource_id === focusResource.resource_id);
+    if (matched) {
+      form.setFieldValue('resource_id', matched.id);
+      focusAppliedKeyRef.current = key;
+    }
+  }, [open, focusResource, selectableResources, form]);
 
   // 切换目标资源时清空已选评测集，防止 pick 指向其他资源类型下的套件。
   useEffect(() => { setPick(null); }, [selectedResourceId]);

@@ -63,9 +63,9 @@ describe('EvolutionCommandModal', () => {
     const optimizationPanel = tabPanel('生成优化候选');
     const panel = within(optimizationPanel);
 
-    await chooseResourceKind(optimizationPanel, 'Skill');
-    await waitFor(() => expect(listSuites).toHaveBeenCalledWith({ resource_kind: 'skill' }));
-    fireEvent.change(panel.getByLabelText('资源 ID'), { target: { value: 'skill-1' } });
+    await chooseResourceKind(optimizationPanel, 'Agent');
+    await waitFor(() => expect(listSuites).toHaveBeenCalledWith({ resource_kind: 'agent' }));
+    fireEvent.change(panel.getByLabelText('资源 ID'), { target: { value: 'agent-1' } });
     fireEvent.change(panel.getByLabelText('稳定 Revision ID'), { target: { value: 'stable-1' } });
     fireEvent.change(panel.getByLabelText('失败摘要'), { target: { value: '幻觉导致答错' } });
     await choosePublishedSuite(optimizationPanel);
@@ -75,7 +75,7 @@ describe('EvolutionCommandModal', () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(onOptimize).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', resource_id: 'skill-1', stable_revision_id: 'stable-1',
+      resource_kind: 'agent', resource_id: 'agent-1', stable_revision_id: 'stable-1',
       failure_summary: '幻觉导致答错', suite_revision_id: 'rev-v2',
     })));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -91,8 +91,8 @@ describe('EvolutionCommandModal', () => {
     const experimentPanel = tabPanel('创建金丝雀');
     const panel = within(experimentPanel);
 
-    await chooseResourceKind(experimentPanel, 'Skill');
-    await waitFor(() => expect(listSuites).toHaveBeenCalledWith({ resource_kind: 'skill' }));
+    await chooseResourceKind(experimentPanel, 'Agent');
+    await waitFor(() => expect(listSuites).toHaveBeenCalledWith({ resource_kind: 'agent' }));
     fireEvent.change(panel.getByLabelText('资源 ID'), { target: { value: 'agent-1' } });
     fireEvent.change(panel.getByLabelText('稳定 Revision ID'), { target: { value: 'stable-1' } });
     fireEvent.change(panel.getByLabelText('候选 Revision ID'), { target: { value: 'candidate-1' } });
@@ -103,26 +103,28 @@ describe('EvolutionCommandModal', () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(onExperiment).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', resource_id: 'agent-1', stable_revision_id: 'stable-1',
+      resource_kind: 'agent', resource_id: 'agent-1', stable_revision_id: 'stable-1',
       candidate_revision_id: 'candidate-1', suite_revision_id: 'rev-v2',
     })));
   });
 
-  it('keeps the feedback tab free of suite fields', async () => {
+  it('records feedback against the被测轨 kind without suite fields', async () => {
     const onFeedback = vi.fn().mockResolvedValue(undefined);
     render(<EvolutionCommandModal open onClose={vi.fn()} onOptimize={vi.fn()}
       onExperiment={vi.fn()} onFeedback={onFeedback} />);
     fireEvent.click(screen.getByRole('tab', { name: '记录反馈' }));
-    const panel = within(tabPanel('记录反馈'));
+    const feedbackPanel = tabPanel('记录反馈');
+    const panel = within(feedbackPanel);
 
     expect(screen.queryByRole('combobox', { name: '评测集' })).not.toBeInTheDocument();
+    await chooseResourceKind(feedbackPanel, 'Agent');
     fireEvent.change(panel.getByLabelText('Trace ID'), { target: { value: 'trace-1' } });
-    fireEvent.change(panel.getByLabelText('反馈资源 ID'), { target: { value: 'skill-1' } });
+    fireEvent.change(panel.getByLabelText('反馈资源 ID'), { target: { value: 'agent-1' } });
     fireEvent.change(panel.getByLabelText('分数'), { target: { value: '0.5' } });
     fireEvent.click(panel.getByRole('button', { name: '提交反馈' }));
 
     await waitFor(() => expect(onFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      trace_id: 'trace-1', resource_id: 'skill-1', score: 0.5,
+      resource_kind: 'agent', trace_id: 'trace-1', resource_id: 'agent-1', score: 0.5,
     })));
     const payload = onFeedback.mock.calls[0][0] as Record<string, unknown>;
     expect(payload).not.toHaveProperty('suite_revision_id');

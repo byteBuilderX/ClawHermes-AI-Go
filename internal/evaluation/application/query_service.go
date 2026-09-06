@@ -25,7 +25,7 @@ func (s *QueryService) Overview(ctx context.Context, tenantID string) (domain.Ce
 }
 
 func normalizeCenterFilter(filter port.CenterFilter) (port.CenterFilter, error) {
-	if filter.ResourceKind != "" && domain.ResourceKind(filter.ResourceKind).Validate() != nil {
+	if err := validateCenterResourceKinds(filter.ResourceKind); err != nil {
 		return filter, domain.ErrInvalidCenterQuery
 	}
 	allowedStatus := map[string]bool{"": true, "draft": true, "published": true, "queued": true, "running": true, "succeeded": true, "failed": true, "cancelled": true, "active": true, "paused": true, "completed": true, "stopped": true, "rolled_back": true, "proposed": true, "promoted": true, "rejected": true}
@@ -44,6 +44,21 @@ func normalizeCenterFilter(filter port.CenterFilter) (port.CenterFilter, error) 
 		filter.Limit = maxCenterLimit
 	}
 	return filter, nil
+}
+
+// validateCenterResourceKinds 校验中心被测类型筛选：空串=全部；逗号分隔的每个 token
+// 都必须是合法 ResourceKind（skill/agent/mcp/knowledge）。默认双轨 CSV 'agent,knowledge'
+// 由此放行，与仓库 ANY(string_to_array($1, ',')) 谓词及 handler 逐 token 语义一致。
+func validateCenterResourceKinds(kind string) error {
+	if kind == "" {
+		return nil
+	}
+	for _, token := range strings.Split(kind, ",") {
+		if token == "" || domain.ResourceKind(token).Validate() != nil {
+			return fmt.Errorf("unsupported resource kind in center filter: %q", kind)
+		}
+	}
+	return nil
 }
 
 func mapCenterError(err error) error {

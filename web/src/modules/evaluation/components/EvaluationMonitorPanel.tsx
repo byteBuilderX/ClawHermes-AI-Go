@@ -13,7 +13,7 @@ import { evaluationApi } from '../api/evaluation.api';
 import type { MonitorFilters, MonitorResourceSummary, ResourceKind } from '../model/evaluation';
 
 import { MonitorResourceDrawer } from './MonitorResourceDrawer';
-import { displayLabel } from './evaluationView';
+import { displayLabel, kindFilterOptions } from './evaluationView';
 
 import {
   EVALUATION_MONITOR_DEFAULT_WINDOW_DAYS, EVALUATION_MONITOR_RESOURCE_LIMIT,
@@ -23,7 +23,6 @@ import { extractErrorMessage } from '@/shared/lib';
 
 const { RangePicker } = DatePicker;
 
-const kindOptions = ['skill', 'agent', 'mcp', 'knowledge'].map((value) => ({ value, label: displayLabel(value) }));
 type WindowRange = [Dayjs, Dayjs];
 
 const windowPresets = EVALUATION_MONITOR_WINDOW_PRESETS_DAYS.map((days) => ({
@@ -114,7 +113,7 @@ export const EvaluationMonitorPanel = ({ defaultKind, defaultResourceId, isMobil
           format="YYYY-MM-DD"
           onChange={(next) => { if (next && next[0] && next[1]) setRange([next[0].startOf('day'), next[1].endOf('day')]); }}
         />
-        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindOptions}
+        <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindFilterOptions}
           value={kind} onChange={(value: ResourceKind | undefined) => { setKind(value); setResourceId(''); }} />
       </Space>
       {error

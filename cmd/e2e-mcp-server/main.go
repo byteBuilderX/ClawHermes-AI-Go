@@ -26,6 +26,10 @@ type opikEvidence struct {
 	UserID     string `json:"user_id"`
 	ResourceID string `json:"resource_id"`
 	RevisionID string `json:"revision_id"`
+	// ResourceKind 标注被测轨（agent/knowledge；历史 skill 语义回归可传 skill）。
+	// manifest 键按 kind:resourceID 构造，与被测收敛后 feedback 命令携带的
+	// resource_kind 对齐——缺省回落 skill 保持旧契约。
+	ResourceKind string `json:"resource_kind"`
 }
 
 var opikEvidenceRegistry sync.Map
@@ -157,7 +161,11 @@ func opikHandler(w http.ResponseWriter, r *http.Request) {
 	content := make([]any, 0)
 	opikEvidenceRegistry.Range(func(_, value any) bool {
 		evidence := value.(opikEvidence)
-		manifest, _ := json.Marshal(map[string]string{"skill:" + evidence.ResourceID: evidence.RevisionID})
+		resourceKind := evidence.ResourceKind
+		if resourceKind == "" {
+			resourceKind = "skill"
+		}
+		manifest, _ := json.Marshal(map[string]string{resourceKind + ":" + evidence.ResourceID: evidence.RevisionID})
 		content = append(content, map[string]any{
 			"id": "opik-" + evidence.TraceID, "name": "agent.execute", "start_time": time.Now().UTC(),
 			"duration": 1, "total_estimated_cost": 0,

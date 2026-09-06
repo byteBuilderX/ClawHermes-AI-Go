@@ -57,6 +57,9 @@ const pickSuite = async (scope: Page | Locator, page: Page, suiteName: string) =
   await page.locator('.ant-select-item-option-content').filter({ hasText: suiteName }).click();
 };
 
+// 决策夹具的假资源被测类型必须是中心默认两轨（agent/knowledge）内，才能出现在
+// 「金丝雀实验」列表被 UI 驱动 promote/rollback。skill/mcp 已退出中心默认视图，故从
+// 原 mcp 收敛为 agent：直插 resource_revisions(kind=agent) + running 实验 + 部署。
 const seedDecisionFixtures = async (
   pool: DatabasePool, tenantID: string, suiteRevisionID: string, suffix: string,
 ) => {
@@ -79,15 +82,15 @@ const seedDecisionFixtures = async (
     await mutate(pool, tenantID, `
       INSERT INTO resource_revisions
         (id,resource_kind,resource_id,source,status,content_hash,payload_hash,payload_ref,safe_summary,published_at)
-      VALUES ($1,'mcp',$2,'manual','published',$3,$3,$4,$5::jsonb,now()),
-             ($6,'mcp',$2,'optimization','draft',$7,$7,$8,$9::jsonb,NULL)`,
+      VALUES ($1,'agent',$2,'manual','published',$3,$3,$4,$5::jsonb,now()),
+             ($6,'agent',$2,'optimization','draft',$7,$7,$8,$9::jsonb,NULL)`,
     [stable, fixture.resource, `hash-${stable}`, `fixture://${stable}`,
       JSON.stringify({ name: fixture.resource, revision: 'stable' }), canary, `hash-${canary}`, `fixture://${canary}`,
       JSON.stringify({ name: fixture.resource, revision: 'canary' })]);
     await mutate(pool, tenantID, `
       INSERT INTO optimization_jobs
         (id,resource_kind,resource_id,baseline_revision_id,suite_revision_id,status,completed_at)
-      VALUES ($1,'mcp',$2,$3,$4,'succeeded',now())`,
+      VALUES ($1,'agent',$2,$3,$4,'succeeded',now())`,
     [optimizationJob, fixture.resource, stable, suiteRevisionID]);
     await mutate(pool, tenantID, `
       INSERT INTO optimization_candidates
@@ -98,13 +101,13 @@ const seedDecisionFixtures = async (
       INSERT INTO evaluation_experiments
         (id,resource_kind,resource_id,stable_revision_id,canary_revision_id,suite_revision_id,status,stage_percent,
          policy,decision_snapshot,state_version,recommendation,safety_stopped)
-      VALUES ($1,'mcp',$2,$3,$4,$5,'running',5,$6::jsonb,$7::jsonb,1,$8,false)`,
+      VALUES ($1,'agent',$2,$3,$4,$5,'running',5,$6::jsonb,$7::jsonb,1,$8,false)`,
     [fixture.experiment, fixture.resource, stable, canary, suiteRevisionID, policy, fixture.snapshot,
       fixture.recommendation]);
     await mutate(pool, tenantID, `
       INSERT INTO evaluation_deployments
         (resource_kind,resource_id,stable_revision_id,canary_revision_id,canary_percent,experiment_id)
-      VALUES ('mcp',$1,$2,$3,5,$4)`, [fixture.resource, stable, canary, fixture.experiment]);
+      VALUES ('agent',$1,$2,$3,5,$4)`, [fixture.resource, stable, canary, fixture.experiment]);
   }
   return fixtures.map((fixture) => ({ ...fixture, stable: `${fixture.resource}-stable`, canary: `${fixture.resource}-canary` }));
 };
@@ -122,6 +125,7 @@ export const executeEvaluationPack = async ({
   const suiteName = `E2E Stateful Suite ${suffix}`;
   let skillID = '';
   let agentID = '';
+  let agentStableRevisionID = '';
   let suiteID = '';
   let suiteRevisionID = '';
   let runID = '';
@@ -129,6 +133,9 @@ export const executeEvaluationPack = async ({
   let fixtureIDs: string[] = [];
   let reviewID = '';
   try {
+    // 被测收敛后主被测轨为 agent：先建一个可激活的绑定 skill（/skills/create 即出
+    // published active revision），再建绑定该技能的 agent，最后在评测中心「登记被测
+    // 资源」建档 agent 成为被测主体（skill 不再独立建档/发起评测）。
     await page.goto(`${webURL}/skills/create`);
     await page.getByLabel('名称').fill(skillName);
     await page.getByLabel('描述').fill('返回可核验的 stateful 评测结果');
@@ -140,7 +147,7 @@ export const executeEvaluationPack = async ({
     expect(createdSkill.status()).toBe(201);
     const skillBody = await createdSkill.json() as { skill: { id: string }; active: { id: string } };
     skillID = skillBody.skill.id;
-    const stableRevisionID = skillBody.active.id;
+    const skillActiveRevisionID = skillBody.active.id;
 
     const agentSkillsResponse = waitFor(page, '/skills', 'GET');
     await page.goto(`${webURL}/agents/create`);
@@ -160,36 +167,44 @@ export const executeEvaluationPack = async ({
     agentID = (await createdAgent.json() as { id: string }).id;
     await mutate(pool, tenantID,
       'INSERT INTO agent_skill_links(agent_id,skill_id,revision_id) VALUES ($1,$2,$3)',
-      [agentID, skillID, stableRevisionID]);
+      [agentID, skillID, skillActiveRevisionID]);
     expect(await rows<{ skill_id: string }>(pool, tenantID,
       'SELECT skill_id FROM agent_skill_links WHERE agent_id=$1', [agentID])).toEqual([{ skill_id: skillID }]);
 
-    await mutate(pool, tenantID, `
-      INSERT INTO resource_revisions
-        (id,resource_kind,resource_id,source,status,content_hash,payload_hash,payload_ref,safe_summary,published_at)
-      VALUES ($1,'skill',$2,'manual','published',$3,$3,$4,$5::jsonb,now())
-      ON CONFLICT (id) DO NOTHING`,
-    [stableRevisionID, skillID, `hash-${stableRevisionID}`, `skill://${stableRevisionID}`,
-      JSON.stringify({ name: skillName })]);
-    await mutate(pool, tenantID, `
-      INSERT INTO evaluation_deployments(resource_kind,resource_id,stable_revision_id,canary_percent)
-      VALUES ('skill',$2,$1,0)
-      ON CONFLICT (resource_kind,resource_id) DO UPDATE SET stable_revision_id=EXCLUDED.stable_revision_id`,
-    [stableRevisionID, skillID]);
-
-    const routeResponse = waitFor(page, '/evaluations/overview', 'GET');
+    // 建档收敛到评测中心的统一登记入口（POST /evaluations/resources/agent/:id/baseline，
+    // 产出一条 published revision 作为被测 agent 的稳定基线）。不再直插 skill/mcp 的
+    // resource_revisions 或 deployment——skill/mcp 已退出建档。
+    const centerResponse = waitFor(page, '/evaluations/overview', 'GET');
     await page.goto(`${webURL}/evaluations`);
-    expect((await routeResponse).status()).toBe(200);
+    expect((await centerResponse).status()).toBe(200);
     await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
+    await page.getByRole('button', { name: '登记被测资源' }).click();
+    const registerDialog = page.getByRole('dialog', { name: '登记被测资源' });
+    // 被测类型默认 Agent；资源下拉加载线上 agent（GET /agents）后按唯一名搜索选择。
+    const resourceCombobox = registerDialog.getByRole('combobox', { name: '被测资源' });
+    await resourceCombobox.click();
+    await resourceCombobox.fill(agentName);
+    await page.locator('.ant-select-item-option-content').filter({ hasText: agentName }).click();
+    const baselineResponse = waitFor(page, /\/evaluations\/resources\/[^/]+\/[^/]+\/baseline$/, 'POST');
+    // footer 同时含「登记并新建评测」，且 antd 对两汉字按钮插空格（登记→登 记），用锚定正则精确匹配主按钮。
+    await registerDialog.getByRole('button', { name: /^登\s*记$/ }).click();
+    const baseline = await baselineResponse;
+    expect(baseline.status()).toBe(201);
+    agentStableRevisionID = (await baseline.json() as { revision_id: string }).revision_id;
+    await expect(registerDialog).toBeHidden();
+    // 登记成功触发中心 reload：资源表每行第二行恒渲染 resource_id（ResourceTable.tsx），
+    // 以 agentID 作唯一建档完成信号（safe_summary.name 未必等于 agentName）。
+    await expect(page.getByRole('row').filter({ hasText: agentID })).toHaveCount(1, { timeout: 15_000 });
+
     await page.getByRole('button', { name: /新建评测/ }).click();
     const createDialog = page.getByRole('dialog', { name: '新建评测' });
     await createDialog.getByRole('combobox', { name: '目标资源' }).click();
-    await page.locator('.ant-select-item-option-content').filter({ hasText: skillName }).click();
+    await page.locator('.ant-select-item-option-content').filter({ hasText: agentID }).click();
     // 两模式 radio（已有评测集 / 新建评测集）：切到「新建评测集」才渲染 create 表单。
     await createDialog.locator('.ant-radio-button-wrapper').filter({ hasText: '新建评测集' }).click();
     await createDialog.getByLabel('评测集名称').fill(suiteName);
     await createDialog.getByLabel('评测集说明').fill('真实浏览器发起的 stateful evaluation');
-    await createDialog.getByLabel('用例名称').fill('确定性 Skill 输出');
+    await createDialog.getByLabel('用例名称').fill('确定性 Agent 输出');
     await createDialog.getByLabel('测试输入').fill('执行 stateful evaluation');
     await createDialog.getByLabel('期望输出').fill('stateful sync completed');
     const suiteResponse = waitFor(page, '/evaluations/suites', 'POST');
@@ -205,7 +220,7 @@ export const executeEvaluationPack = async ({
     expect((await runResponse).status()).toBe(202);
     await expect.poll(async () => (await rows<{ id: string; status: string }>(pool, tenantID,
       `SELECT id,status FROM eval_runs WHERE resource_id=$1 AND suite_revision_id=$2 ORDER BY created_at DESC LIMIT 1`,
-    [skillID, suiteRevisionID]))[0]?.status, { timeout: 120_000 }).toBe('succeeded');
+    [agentID, suiteRevisionID]))[0]?.status, { timeout: 120_000 }).toBe('succeeded');
     const run = (await rows<{ id: string; trace_id: string; error_message: string; actual_output: string }>(pool, tenantID, `
       SELECT r.id,
              cr.trace_id,
@@ -214,7 +229,7 @@ export const executeEvaluationPack = async ({
       FROM eval_runs r
       JOIN eval_case_results cr ON cr.run_id = r.id
       WHERE r.resource_id=$1 AND r.suite_revision_id=$2 ORDER BY r.created_at DESC LIMIT 1`,
-    [skillID, suiteRevisionID]))[0];
+    [agentID, suiteRevisionID]))[0];
     if (!run) throw new Error('evaluation run result was not persisted');
     runID = run.id;
     expect(run.trace_id,
@@ -299,9 +314,9 @@ export const executeEvaluationPack = async ({
     let dialog = await openEvolution(page);
     let panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
-    await page.locator('.ant-select-item-option-content').filter({ hasText: 'Skill' }).click();
-    await panel.getByLabel('资源 ID').fill(skillID);
-    await panel.getByLabel('稳定 Revision ID').fill(stableRevisionID);
+    await page.locator('.ant-select-item-option-content').filter({ hasText: 'Agent' }).click();
+    await panel.getByLabel('资源 ID').fill(agentID);
+    await panel.getByLabel('稳定 Revision ID').fill(agentStableRevisionID);
     await panel.getByLabel('失败摘要').fill('输出需要更明确且可核验');
     // SuitePicker 两级选择评测集并自动选 active 版本；选完前「生成候选」保持禁用。
     await pickSuite(panel, page, suiteName);
@@ -328,7 +343,7 @@ export const executeEvaluationPack = async ({
     await expect(evaluationDialog).toBeHidden();
     await expect.poll(async () => (await rows<{ status: string; passed: boolean }>(pool, tenantID, `
       SELECT status,passed FROM eval_runs WHERE resource_id=$1 AND revision_id=$2 AND suite_revision_id=$3
-      ORDER BY created_at DESC LIMIT 1`, [skillID, candidates[1].revision.revision_id, suiteRevisionID]))[0],
+      ORDER BY created_at DESC LIMIT 1`, [agentID, candidates[1].revision.revision_id, suiteRevisionID]))[0],
     { timeout: 120_000 }).toEqual({ status: 'succeeded', passed: true });
     await closeDrawerIfOpen(page);
     await page.reload();
@@ -348,9 +363,9 @@ export const executeEvaluationPack = async ({
     await dialog.getByRole('tab', { name: '创建金丝雀' }).click();
     panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
-    await page.locator('.ant-select-item-option-content').filter({ hasText: 'Skill' }).click();
-    await panel.getByLabel('资源 ID').fill(skillID);
-    await panel.getByLabel('稳定 Revision ID').fill(stableRevisionID);
+    await page.locator('.ant-select-item-option-content').filter({ hasText: 'Agent' }).click();
+    await panel.getByLabel('资源 ID').fill(agentID);
+    await panel.getByLabel('稳定 Revision ID').fill(agentStableRevisionID);
     await panel.getByLabel('候选 Revision ID').fill(candidates[1].revision.revision_id);
     await pickSuite(panel, page, suiteName);
     const experimentResponse = waitFor(page, '/evaluations/experiments', 'POST');
@@ -365,14 +380,16 @@ export const executeEvaluationPack = async ({
 
     const evidenceRegistration = await page.request.post(`${fixtureURL}/e2e/opik/register`, { data: {
       trace_id: run.trace_id, tenant_id: tenantID, user_id: userID,
-      resource_id: skillID, revision_id: stableRevisionID,
+      resource_kind: 'agent', resource_id: agentID, revision_id: agentStableRevisionID,
     } });
     expect(evidenceRegistration.status()).toBe(204);
     dialog = await openEvolution(page);
     await dialog.getByRole('tab', { name: '记录反馈' }).click();
     panel = dialog.locator('.ant-tabs-tabpane-active');
+    await panel.getByRole('combobox', { name: '资源类型' }).click();
+    await page.locator('.ant-select-item-option-content').filter({ hasText: 'Agent' }).click();
     await panel.getByLabel('Trace ID').fill(run.trace_id);
-    await panel.getByLabel('反馈资源 ID').fill(skillID);
+    await panel.getByLabel('反馈资源 ID').fill(agentID);
     await panel.getByLabel('分数').fill('0.9');
     const feedbackResponse = waitFor(page, '/evaluations/feedback', 'POST');
     await dialog.getByRole('button', { name: '提交反馈' }).click();
@@ -436,8 +453,8 @@ export const executeEvaluationPack = async ({
     await mutate(pool, tenantID, `
       INSERT INTO eval_review_items
         (id,source_type,source_id,run_id,resource_kind,resource_id,trigger_reason,snapshot,status)
-      VALUES ($1,'observation',$2,$3,'skill',$4,'low_confidence',$5::jsonb,'pending')`,
-    [reviewID, reviewSourceID, runID, skillID,
+      VALUES ($1,'observation',$2,$3,'agent',$4,'low_confidence',$5::jsonb,'pending')`,
+    [reviewID, reviewSourceID, runID, agentID,
       JSON.stringify({ signals: { judge: [{ dimension: 'faithfulness', score: 0.6, confidence: 0.3 }] },
         verdict: 'pass', stratum: 'evaluation', cost_usd: 0.0 })]);
     const reviewListResponse = waitFor(page, '/evaluations/review', 'GET');
@@ -447,7 +464,7 @@ export const executeEvaluationPack = async ({
     const reviewListBody = await reviewList.json() as { items: Array<{ id: string }>; total: number };
     expect(reviewListBody.items.some((item) => item.id === reviewID)).toBe(true);
     expect(reviewListBody.total).toBeGreaterThanOrEqual(1);
-    const reviewRow = page.locator('.ant-tabs-tabpane-active .ant-table-row').filter({ hasText: skillID });
+    const reviewRow = page.locator('.ant-tabs-tabpane-active .ant-table-row').filter({ hasText: agentID });
     await expect(reviewRow).toHaveCount(1, { timeout: 15_000 });
 
     // 详情 Drawer 仅展示行数据不发请求，端点用页面 fetch 直接覆盖（带 JWT，走真实浏览器）。
@@ -495,27 +512,29 @@ export const executeEvaluationPack = async ({
   } finally {
     const cleanupTasks: Array<() => Promise<unknown>> = [];
     if (suiteID) {
+      const fixtureResource = [`e2e-promote-${suffix}`, `e2e-rollback-${suffix}`];
       const cleanup = [
-        { text: 'DELETE FROM evaluation_feedback WHERE resource_id=$1', values: [skillID] },
+        { text: 'DELETE FROM evaluation_feedback WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3',
+          values: [agentID, ...fixtureResource] },
         { text: 'DELETE FROM experiment_decisions WHERE experiment_id=$1 OR experiment_id=ANY($2::text[])',
           values: [experimentID || 'none', fixtureIDs] },
-        { text: 'DELETE FROM evaluation_deployments WHERE resource_id=$1 OR experiment_id=ANY($2::text[])',
-          values: [skillID, fixtureIDs] },
+        { text: 'DELETE FROM evaluation_deployments WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3 OR experiment_id=ANY($4::text[])',
+          values: [agentID, ...fixtureResource, fixtureIDs] },
         { text: 'DELETE FROM evaluation_experiments WHERE id=$1 OR id=ANY($2::text[])',
           values: [experimentID || 'none', fixtureIDs] },
-        { text: 'DELETE FROM optimization_candidates WHERE optimization_job_id IN (SELECT id FROM optimization_jobs WHERE resource_id=$1)',
-          values: [skillID] },
-        { text: 'DELETE FROM optimization_jobs WHERE resource_id=$1', values: [skillID] },
-        { text: 'DELETE FROM optimization_jobs WHERE resource_id LIKE $1 OR resource_id LIKE $2',
-          values: [`e2e-promote-${suffix}`, `e2e-rollback-${suffix}`] },
-        { text: "DELETE FROM evaluation_jobs WHERE result_id=$1 OR payload->'resource'->>'resource_id'=$2",
-          values: [runID || 'none', skillID] },
-        { text: 'DELETE FROM eval_case_results WHERE run_id IN (SELECT id FROM eval_runs WHERE resource_id=$1)',
-          values: [skillID] },
-        { text: 'DELETE FROM eval_runs WHERE resource_id=$1', values: [skillID] },
+        { text: 'DELETE FROM optimization_candidates WHERE optimization_job_id IN (SELECT id FROM optimization_jobs WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3)',
+          values: [agentID, ...fixtureResource] },
+        { text: 'DELETE FROM optimization_jobs WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3',
+          values: [agentID, ...fixtureResource] },
+        { text: "DELETE FROM evaluation_jobs WHERE result_id=$1 OR payload->'resource'->>'resource_id'=$2 OR payload->'resource'->>'resource_id'=$3 OR payload->'resource'->>'resource_id'=$4",
+          values: [runID || 'none', agentID, ...fixtureResource] },
+        { text: 'DELETE FROM eval_case_results WHERE run_id IN (SELECT id FROM eval_runs WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3)',
+          values: [agentID, ...fixtureResource] },
+        { text: 'DELETE FROM eval_runs WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3',
+          values: [agentID, ...fixtureResource] },
         { text: 'DELETE FROM eval_suites WHERE id=$1', values: [suiteID] },
-        { text: 'DELETE FROM resource_revisions WHERE resource_id=$1 OR id LIKE $2 OR id LIKE $3',
-          values: [skillID, `e2e-promote-%-${suffix}`, `e2e-rollback-%-${suffix}`] },
+        { text: 'DELETE FROM resource_revisions WHERE resource_id=$1 OR resource_id=$2 OR resource_id=$3',
+          values: [agentID, ...fixtureResource] },
       ];
       cleanupTasks.push(...cleanup.map((query) => async () => mutate(pool, tenantID, query.text, query.values)));
     }

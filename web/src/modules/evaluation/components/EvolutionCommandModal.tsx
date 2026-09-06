@@ -1,16 +1,15 @@
 import { Button, Form, Input, InputNumber, Modal, Select, Tabs, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 
+import { registrableResourceKinds } from '../model/evaluation';
 import type { ResourceKind } from '../model/evaluation';
 
 import { SuitePicker, type SuitePick } from './SuitePicker';
+import { displayLabel } from './evaluationView';
 
-const resourceOptions = [
-  { value: 'skill', label: 'Skill' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'mcp', label: 'MCP' },
-  { value: 'knowledge', label: '知识库' },
-];
+// 演化命令（生成优化/金丝雀实验）面向当前被测对象：skill/mcp 已退出被测，不再对
+// 历史类型发起优化与实验（历史 candidate/experiment 记录仅只读浏览）。
+const resourceOptions = registrableResourceKinds.map((value) => ({ value, label: displayLabel(value) }));
 
 export interface OptimizationCommandValues {
   resource_kind: ResourceKind;
@@ -29,6 +28,9 @@ export interface ExperimentCommandValues {
 }
 
 export interface FeedbackCommandValues {
+  // resource_kind 标注被测轨（agent/knowledge）：trace 归属被测对象；后端按
+  // Assignments[kind:resourceID] 精确匹配 trace 的 resource_manifest 键。
+  resource_kind: ResourceKind;
   trace_id: string;
   resource_id: string;
   score: number;
@@ -125,6 +127,9 @@ export const EvolutionCommandModal = ({ open, onClose, onOptimize, onExperiment,
             (values) => ({ ...values, suite_revision_id: experimentPick?.revisionId ?? '' }))}>创建金丝雀</Button>
       </Form> },
       { key: 'feedback', label: '记录反馈', children: <Form form={feedbackForm} layout="vertical">
+        <Form.Item name="resource_kind" label="资源类型" rules={[{ required: true, message: '请选择资源类型' }]}>
+          <Select aria-label="资源类型" options={resourceOptions} />
+        </Form.Item>
         <Form.Item name="trace_id" label="Trace ID" rules={[{ required: true, message: '请输入 Trace ID' }]}>
           <Input aria-label="Trace ID" />
         </Form.Item>

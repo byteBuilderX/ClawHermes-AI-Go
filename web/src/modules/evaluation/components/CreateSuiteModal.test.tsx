@@ -10,7 +10,7 @@ describe('CreateSuiteModal', () => {
     render(<CreateSuiteModal open onClose={onClose} onSubmit={onSubmit} />);
 
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '资源类型' }));
-    fireEvent.click(await screen.findByText('技能'));
+    fireEvent.click(await screen.findByText('Agent'));
     fireEvent.change(screen.getByLabelText('套件名称'), { target: { value: '投诉分类基线' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '物流' } });
     fireEvent.change(screen.getByLabelText('测试输入'), { target: { value: '快递没更新' } });
@@ -18,7 +18,7 @@ describe('CreateSuiteModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', name: '投诉分类基线', case_name: '物流',
+      resource_kind: 'agent', name: '投诉分类基线', case_name: '物流',
       input: '快递没更新', expected_output: '物流', assertion_mode: 'contains', enabled: true,
     })));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -29,7 +29,7 @@ describe('CreateSuiteModal', () => {
     render(<CreateSuiteModal open onClose={vi.fn()} onSubmit={onSubmit} />);
 
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '资源类型' }));
-    fireEvent.click(await screen.findByText('技能'));
+    fireEvent.click(await screen.findByText('Agent'));
     fireEvent.change(screen.getByLabelText('套件名称'), { target: { value: '工具链路基线' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '查天气' } });
     fireEvent.change(screen.getByLabelText('测试输入'), { target: { value: '北京天气' } });
@@ -45,7 +45,7 @@ describe('CreateSuiteModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', name: '工具链路基线', case_name: '查天气',
+      resource_kind: 'agent', name: '工具链路基线', case_name: '查天气',
       input: '北京天气', expected_output: '晴天', assertion_mode: 'contains', enabled: true,
       must_call: ['weather'], max_calls: 5, step_criteria: '每一步都要说明依据',
     })));
@@ -56,7 +56,7 @@ describe('CreateSuiteModal', () => {
     render(<CreateSuiteModal open onClose={vi.fn()} onSubmit={onSubmit} />);
 
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '资源类型' }));
-    fireEvent.click(await screen.findByText('技能'));
+    fireEvent.click(await screen.findByText('Agent'));
     fireEvent.change(screen.getByLabelText('套件名称'), { target: { value: '售后会话基线' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '退货退款' } });
     fireEvent.click(screen.getByRole('radio', { name: '会话剧本' }));
@@ -86,7 +86,7 @@ describe('CreateSuiteModal', () => {
     render(<CreateSuiteModal open onClose={vi.fn()} onSubmit={onSubmit} />);
 
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '资源类型' }));
-    fireEvent.click(await screen.findByText('技能'));
+    fireEvent.click(await screen.findByText('Agent'));
     fireEvent.change(screen.getByLabelText('套件名称'), { target: { value: '投诉分类基线' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '总结判定' } });
     fireEvent.change(screen.getByLabelText('测试输入'), { target: { value: '帮我总结' } });
@@ -98,7 +98,7 @@ describe('CreateSuiteModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', name: '投诉分类基线', case_name: '总结判定',
+      resource_kind: 'agent', name: '投诉分类基线', case_name: '总结判定',
       input: '帮我总结', expected_output: '要点',
       assertion_mode: 'judge', judge_model: 'judge-v1', judge_rubric: '总结要点覆盖度', enabled: true,
     })));

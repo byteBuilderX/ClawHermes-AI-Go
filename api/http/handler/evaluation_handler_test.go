@@ -64,6 +64,38 @@ func TestEvaluationHandlerCreateBaselineUsesTenantAndResourcePath(t *testing.T) 
 	}
 }
 
+// 被测收敛后建档仅支持 agent/knowledge；skill/mcp 直呼建档 API 应被 handler
+// allow-list 拒绝（403），且不触达 baseline service。
+func TestEvaluationHandlerCreateBaselineRejectsLegacyKinds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baselines := &fakeEvaluationBaselines{}
+	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, nil, nil, zap.NewNop()).
+		WithBaselineService(baselines)
+	r := gin.New()
+	r.Use(middleware.ErrorHandler(zap.NewNop()))
+	r.POST("/evaluations/resources/:kind/:id/baseline", withTenant("tenant-1"), h.CreateBaseline)
+
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{name: "skill withdrawn", kind: "skill"},
+		{name: "mcp withdrawn", kind: "mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+				"/evaluations/resources/"+tc.kind+"/"+tc.kind+"-1/baseline", nil))
+			if rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Body.String(), `{"error":`) {
+				t.Fatalf("unexpected response: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if baselines.kind != "" {
+		t.Fatalf("baseline service must not be invoked for legacy kinds: %+v", baselines)
+	}
+}
+
 func TestEvaluationHandlerGenerateOptimizationReturnsCandidates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	optimization := &fakeOptimizationService{}
@@ -154,6 +186,39 @@ func TestEvaluationHandlerListResourcesPropagatesFilters(t *testing.T) {
 	var page domain.ResourcePage
 	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 {
 		t.Fatalf("typed page response=%s err=%v", rec.Body.String(), err)
+	}
+}
+
+func TestEvaluationHandlerCenterResourceKindFilterAllowsCSV(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantKind   string
+	}{
+		{name: "default two-track CSV passes through", query: "resource_kind=agent,knowledge", wantStatus: http.StatusOK, wantKind: "agent,knowledge"},
+		{name: "single legacy kind still works", query: "resource_kind=skill", wantStatus: http.StatusOK, wantKind: "skill"},
+		{name: "empty kind means all kinds", query: "resource_kind=", wantStatus: http.StatusOK, wantKind: ""},
+		{name: "unsupported kind rejected", query: "resource_kind=banana", wantStatus: http.StatusBadRequest, wantKind: ""},
+		{name: "empty csv token rejected", query: "resource_kind=agent,,knowledge", wantStatus: http.StatusBadRequest, wantKind: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := &fakeEvaluationQueries{}
+			h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
+			r := gin.New()
+			r.Use(middleware.ErrorHandler(zap.NewNop()))
+			r.GET("/evaluations/resources", withTenant("tenant-1"), h.ListResources)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/evaluations/resources?"+tc.query, nil))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK && queries.filter.ResourceKind != tc.wantKind {
+				t.Fatalf("kind not propagated: got %q want %q", queries.filter.ResourceKind, tc.wantKind)
+			}
+		})
 	}
 }
 
