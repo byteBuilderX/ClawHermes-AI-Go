@@ -81,6 +81,16 @@ const (
 	// 递增 1，进程内 run 能达到本值必然已在 nudge 档提示过一轮，无需额外记账；
 	// 3/4 保证 MaxLLMSteps≤4 的短循环（plan 子步默认 3）优先走强制收尾而非误杀。
 	AgentNoProgressTerminateThreshold = 4
+	// AgentNoProgressWindow 是振荡停滞检测的回溯窗口（最近 N 个已完成成功工具
+	// 回合）。振荡 = 在少量指纹间反复切换（A→B→A→B→A→B）：连续 run 不成立故
+	// 上方连续检测不触发，需窗口统计。窗口 6 + 阈值 3：至少 5 个成功回合才可能
+	// 命中（某指纹重复 ≥3），短于该量的子循环（plan 子步默认 3）到不了窗口。
+	AgentNoProgressWindow = 6
+	// AgentNoProgressOscillationThreshold 是振荡停滞的触发阈值：窗口内去重指纹
+	// 数 ∈ [2, 本值] 且最高频指纹重复 ≥ 本值才判停滞。去重数上限 = 本值（指纹
+	// 种类更多意味着在系统性换路尝试，不算振荡）；高频重复 ≥3 = 某操作反复
+	// 出现，与连续停滞同量级。
+	AgentNoProgressOscillationThreshold = 3
 	// AgentFinalAnswerInstruction 是 ReAct 达步数上限强制收尾的 system 指令：
 	// 基于已有分析和工具结果总结已做到的事，并明确告知用户已达最大迭代次数。
 	AgentFinalAnswerInstruction = "You have reached the maximum reasoning steps. Summarize what has been accomplished so far based on your analysis and tool results, and explicitly inform the user that the maximum number of steps has been reached. Do not call any tools."

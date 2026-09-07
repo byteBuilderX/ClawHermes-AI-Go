@@ -230,3 +230,75 @@ func TestNoProgressTextDeterministic(t *testing.T) {
 	require.Contains(t, nudge, "3 轮工具调用")
 	require.Contains(t, nudge, "不要重复上次的操作")
 }
+
+// npRounds 把指纹/ok 序列转成 noProgressRound 序列（测振荡窗口统计用）。
+func npRounds(fps []string, notOK ...int) []noProgressRound {
+	bad := make(map[int]bool)
+	for _, i := range notOK {
+		bad[i] = true
+	}
+	out := make([]noProgressRound, 0, len(fps))
+	for i, f := range fps {
+		out = append(out, noProgressRound{fingerprint: f, ok: !bad[i]})
+	}
+	return out
+}
+
+func TestOscillationStall(t *testing.T) {
+	const (
+		oscTh  = constants.AgentNoProgressOscillationThreshold
+		window = constants.AgentNoProgressWindow
+	)
+	tests := []struct {
+		name          string
+		rounds        []noProgressRound
+		wantStalled   bool
+		wantOK        int
+		wantMaxRepeat int
+	}{
+		{"strictAlternationDetects", npRounds([]string{"A", "B", "A", "B", "A", "B"}), true, 6, 3},
+		{"fiveSamplesStillDetects", npRounds([]string{"A", "B", "A", "B", "A"}), true, 5, 3},
+		{"tooFewSamplesNoFire", npRounds([]string{"A", "B", "A", "B"}), false, 4, 2},
+		{"threeDistinctBalancedNoFire", npRounds([]string{"A", "B", "C", "A", "B", "C"}), false, 6, 2},
+		{"manyDistinctNoFire", npRounds([]string{"A", "B", "C", "D", "A", "B"}), false, 6, 2},
+		{"singleFingerprintNoFire", npRounds([]string{"A", "A", "A", "A", "A", "A"}), false, 6, 6},
+		{"emptyNoFire", nil, false, 0, 0},
+		// 错误回合不进窗口统计：B 位全错后窗口只剩 A A A（单一指纹）→ 归连续
+		// run 检测，振荡不误报。
+		{"errorRoundsExcludedFromWindow", npRounds([]string{"A", "B", "A", "B", "A", "B"}, 1, 3, 5), false, 3, 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stalled, okRounds, maxRepeat := oscillationStall(tc.rounds, oscTh, window)
+			require.Equal(t, tc.wantStalled, stalled)
+			require.Equal(t, tc.wantOK, okRounds)
+			require.Equal(t, tc.wantMaxRepeat, maxRepeat)
+		})
+	}
+}
+
+func TestOscillationStall_WindowSizeMatters(t *testing.T) {
+	// 同一 A/B 交替样本：窗口太小（样本不足，某指纹重复 <3）不命中；窗口放宽到
+	// 覆盖 ≥5 个 ok 回合后命中。验证 window 参数真实参与判定（防把窗口写死）。
+	const oscTh = constants.AgentNoProgressOscillationThreshold
+	rounds := npRounds([]string{"A", "B", "A", "B", "A", "B"})
+	stalled3, ok3, _ := oscillationStall(rounds, oscTh, 3)
+	require.False(t, stalled3, "窗口 3：末尾 B A B → B 重复 2 次 < 阈值")
+	require.Equal(t, 3, ok3)
+	stalled6, ok6, max6 := oscillationStall(rounds, oscTh, 6)
+	require.True(t, stalled6, "窗口 6：A×3 B×3 → 命中振荡")
+	require.Equal(t, 6, ok6)
+	require.Equal(t, 3, max6)
+}
+
+func TestOscillationTextDeterministic(t *testing.T) {
+	output := oscillationTerminationOutput(6)
+	require.Contains(t, output, "反复切换")
+	require.Contains(t, output, "提前结束")
+	require.Equal(t, output, oscillationTerminationOutput(6), "振荡终止说明必须确定")
+
+	nudge := oscillationNudgeInstruction(6)
+	require.Contains(t, nudge, "6 轮工具调用")
+	require.Contains(t, nudge, "反复切换")
+	require.NotContains(t, nudge, "不要重复上次的操作", "振荡文案独立于连续 run 文案")
+}
