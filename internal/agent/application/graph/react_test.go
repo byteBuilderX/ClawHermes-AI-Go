@@ -290,7 +290,12 @@ type capGWSequence struct {
 
 func (s *capGWSequence) Route(_ context.Context, req port.CapabilityRequest) (port.CapabilityResponse, error) {
 	if req.LLM != nil {
-		s.llmReqs = append(s.llmReqs, *req.LLM)
+		// 记录 dispatch 时刻的快照：克隆外层 Messages，避免与调用方 s.Messages 共享
+		// 底层数组——后续 appendLLMResponse 会把新消息写进同一索引，覆盖已记录的尾件
+		// （stub 浅拷贝会导致 llmReqs 与真实网关看到的内容不一致）。
+		snap := *req.LLM
+		snap.Messages = append([]port.LLMMessage{}, req.LLM.Messages...)
+		s.llmReqs = append(s.llmReqs, snap)
 	}
 	if s.idx < len(s.responses) {
 		r := s.responses[s.idx]
@@ -699,8 +704,9 @@ func TestBuildReActGraph_MCPToolCallRecordsProviderMetadata(t *testing.T) {
 	require.Equal(t, "mcp", out.TraceEvents[3].NodeType)
 }
 
-func TestBuildReActGraph_MaxIterations(t *testing.T) {
-	// LLM always returns a tool call → loop until max steps hit
+func TestBuildReActGraph_NoProgressTerminatesBeforeMaxSteps(t *testing.T) {
+	// 无限重复同 noop{}→"ok"：runLen 3 注入换路提示（模型仍重复）→ runLen 4 以业务
+	// 终止 no_progress 收尾，提前于 MaxSteps 撞顶——不误报 error、不烧满步数预算。
 	stub := &capGWSequence{
 		infinite: port.CapabilityResponse{
 			ToolCalls: []port.ToolCall{{ID: "c1", Name: "noop", Arguments: map[string]any{}}},
@@ -717,8 +723,12 @@ func TestBuildReActGraph_MaxIterations(t *testing.T) {
 			return guardedToolOutput("ok"), nil
 		},
 	}
-	_, err = cg.Invoke(context.Background(), state, graph.RunConfig[graph.ReActState]{MaxSteps: 4})
-	require.ErrorContains(t, err, "max steps")
+	out, err := cg.Invoke(context.Background(), state, graph.RunConfig[graph.ReActState]{MaxSteps: 10})
+	require.NoError(t, err)
+	require.Equal(t, graph.NoProgressTerminated, out.TerminatedBy)
+	require.Contains(t, out.Output, "提前结束")
+	require.Equal(t, 4, len(stub.llmReqs), "3 次同指纹 + 1 次带提示轮后即终止，不再烧预算")
+	require.Len(t, out.AllToolCalls, 4)
 }
 
 func TestBuildReActGraph_LLMError(t *testing.T) {

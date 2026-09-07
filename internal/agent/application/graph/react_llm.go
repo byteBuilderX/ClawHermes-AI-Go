@@ -70,9 +70,30 @@ func makeLLMNode(capGW port.CapabilityGateway, ledger TokenRecorder, logger *zap
 			s.SkipNextLLM = false
 			return s, nil
 		}
+		// 无进展停滞判定（无状态派生，见 no_progress.go）：连续同指纹完成回合达
+		// 终止阈值 → 业务终止收尾（不发起本轮 LLM、不执行工具）；达 nudge 阈值 →
+		// 本轮请求注入换路提示给模型一次转机。已终止 / 强制收尾步已在判定内让位。
+		verdict, runLen := noProgressDetail(s, constants.AgentNoProgressNudgeThreshold,
+			constants.AgentNoProgressTerminateThreshold)
+		if verdict == noProgressTerminate {
+			s.TerminatedBy = NoProgressTerminated
+			s.Output = noProgressTerminationOutput(runLen)
+			logger.Warn("react llm: no-progress termination",
+				zap.Int("consecutive_rounds", runLen))
+			return s, nil
+		}
 		start := time.Now()
 
 		tools, messages, _ := prepareLLMRequest(ctx, &s)
+		if verdict == noProgressNudge {
+			// 换路提示只进本轮请求（s.Messages 不落合成 user 轮，不会当用户气泡
+			// 持久化）；尾部 user 角色与 BuildContextMessages「任务指令在尾部 user」
+			// 一致，对 OpenAI 兼容网关合法。tools 保持可用，模型可换工具继续推进。
+			messages = append(messages, port.LLMMessage{
+				Role:    "user",
+				Content: noProgressNudgeInstruction(runLen),
+			})
+		}
 		ctx, llmSpan := startLLMTrace(ctx, &s, messages, tools, start)
 		defer llmSpan.End()
 

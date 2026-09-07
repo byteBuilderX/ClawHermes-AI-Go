@@ -72,6 +72,15 @@ const (
 	AgentDegradeReasonStopLossPrefix = "tool_stop_loss:"
 	// AgentToolStopLossObservation 是止损后返回给模型的观察文案（%s = 工具名）。
 	AgentToolStopLossObservation = "Tool %s has been stopped after repeated validation failures. Use an alternative approach."
+	// AgentNoProgressNudgeThreshold 是「同工具+同参+同归一化结果」的连续完成回合
+	// 数达到该值时，向模型注入一次换路提示（nudge-then-cut 的 nudge 档）。提示
+	// 只进本轮请求、不落持久会话，给模型一次换用不同工具/参数或直接作答的转机。
+	AgentNoProgressNudgeThreshold = 3
+	// AgentNoProgressTerminateThreshold 是连续同指纹回合数达到该值时，以业务终止
+	// （reason=no_progress，非错误）结束执行。比 nudge 档大 1：每次入口 run 至多
+	// 递增 1，进程内 run 能达到本值必然已在 nudge 档提示过一轮，无需额外记账；
+	// 3/4 保证 MaxLLMSteps≤4 的短循环（plan 子步默认 3）优先走强制收尾而非误杀。
+	AgentNoProgressTerminateThreshold = 4
 	// AgentFinalAnswerInstruction 是 ReAct 达步数上限强制收尾的 system 指令：
 	// 基于已有分析和工具结果总结已做到的事，并明确告知用户已达最大迭代次数。
 	AgentFinalAnswerInstruction = "You have reached the maximum reasoning steps. Summarize what has been accomplished so far based on your analysis and tool results, and explicitly inform the user that the maximum number of steps has been reached. Do not call any tools."
