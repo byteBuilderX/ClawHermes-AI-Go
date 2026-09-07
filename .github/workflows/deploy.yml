@@ -505,6 +505,10 @@ jobs:
           test -n "$NACOS_AUTH_TOKEN"
           kubectl create namespace stratum --dry-run=client -o yaml | kubectl apply -f -
           JWT_KEY=$(echo "${{ secrets.JWT_PRIVATE_KEY }}" | base64 -d)
+          # 评测被测建档（agent/knowledge）的 eval revision 对象存储复用 trace-payload
+          # MinIO：access/secret 必须注入，否则 buildRevisionObjectStore 静默跳过、
+          # baseline providers 未注册 →「登记被测资源」500。minio rootUser=minioadmin，
+          # 密码与 minio 初始化共用 MINIO_ROOT_PASSWORD。
           kubectl create secret generic stratum-secrets \
             --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
             --from-literal=MINIO_ROOT_PASSWORD="$MINIO_ROOT_PASSWORD" \
@@ -516,6 +520,8 @@ jobs:
             --from-literal=NACOS_AUTH_IDENTITY_KEY="$NACOS_AUTH_IDENTITY_KEY" \
             --from-literal=NACOS_AUTH_IDENTITY_VALUE="$NACOS_AUTH_IDENTITY_VALUE" \
             --from-literal=NACOS_AUTH_TOKEN="$NACOS_AUTH_TOKEN" \
+            --from-literal=TRACE_PAYLOAD_ACCESS_KEY="minioadmin" \
+            --from-literal=TRACE_PAYLOAD_SECRET_KEY="$MINIO_ROOT_PASSWORD" \
             -n stratum --dry-run=client -o yaml | kubectl apply -f -
           kubectl create secret docker-registry aliyun-registry \
             --docker-server="${{ secrets.DOCKER_REGISTRY_URL }}" \
