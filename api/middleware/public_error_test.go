@@ -229,3 +229,47 @@ func TestErrorHandlerReturnsFailClosedPromptContract(t *testing.T) {
 		t.Fatalf("body = %q, want %q", response.Body.String(), wantBody)
 	}
 }
+
+// 建档（评测登记）被测 agent 自身缺 system_prompt：AgentRevision 领域校验失败不再是
+// 裸 500，而应映射为 422 + 固定中文 + 专用 code——前端登记 toast 直接展示后端消息，
+// 提示用户先为被测 agent 配置系统提示词再重试。
+func TestPublicErrorDescribesSubjectAgentPromptRequired(t *testing.T) {
+	err := fmt.Errorf("evaluation baseline: create published revision: agent adapter: snapshot baseline: %w",
+		agentdomain.ErrAgentSystemPromptRequired)
+
+	got := DescribePublicError(err, http.StatusUnprocessableEntity)
+	want := PublicErrorDescriptor{
+		Message: "该被测 Agent 尚未配置系统提示词，无法建档。请先在 Agent 配置中填写系统提示词后再登记",
+		Code:    CodeAgentSystemPromptRequired,
+	}
+	if got != want {
+		t.Fatalf("DescribePublicError() = %#v, want %#v", got, want)
+	}
+}
+
+func TestMapErrorToStatusMapsSubjectAgentPromptToUnprocessable(t *testing.T) {
+	if got := MapErrorToStatus(agentdomain.ErrAgentSystemPromptRequired); got != http.StatusUnprocessableEntity {
+		t.Fatalf("MapErrorToStatus(subject prompt) = %d, want %d", got, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestErrorHandlerReturnsSubjectAgentPromptContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(ErrorHandler(zap.NewNop()))
+	router.GET("/baseline", func(c *gin.Context) {
+		_ = c.Error(fmt.Errorf("evaluation baseline: create published revision: agent adapter: snapshot baseline: %w",
+			agentdomain.ErrAgentSystemPromptRequired))
+	})
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/baseline", nil))
+
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnprocessableEntity)
+	}
+	wantBody := "{\"code\":\"AGENT_SYSTEM_PROMPT_REQUIRED\",\"error\":\"该被测 Agent 尚未配置系统提示词，无法建档。请先在 Agent 配置中填写系统提示词后再登记\"}"
+	if response.Body.String() != wantBody {
+		t.Fatalf("body = %q, want %q", response.Body.String(), wantBody)
+	}
+}

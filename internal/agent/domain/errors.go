@@ -38,4 +38,10 @@ var (
 	// ErrCompactionPromptNotConfigured 标记平台压缩提示词 agent.compaction_prompt 未配置
 	// （fail-closed：禁止空 system prompt 静默调用 LLM）。
 	ErrCompactionPromptNotConfigured = errors.New("agent.compaction_prompt not configured (fail-closed)")
+	// ErrAgentSystemPromptRequired 标记某被测/发布 agent 自身的 system_prompt 为空，
+	// 不满足 AgentRevision 领域不变量（agent_revision.go Validate）。区别于平台全局
+	// ErrSystemPromptNotConfigured（503 fail-closed 提示管理员补平台参数）：这是该
+	// agent 自身配置缺失，属用户可修正的资源状态问题，middleware 映射为 4xx 可读中文，
+	// 提示先为被测 agent 配置系统提示词再建档。
+	ErrAgentSystemPromptRequired = errors.New("agent revision: system prompt required")
 )

@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func validRevision() AgentRevision {
 	return AgentRevision{
@@ -38,6 +41,24 @@ func TestAgentRevisionValidateWhitespaceFields(t *testing.T) {
 				t.Errorf("%s must fail validation", tc.name)
 			}
 		})
+	}
+}
+
+func TestAgentRevisionBlankPromptReturnsMatchableSentinel(t *testing.T) {
+	// 建档（评测登记）路径对被测 agent 快照做领域校验，缺 system_prompt 的错误经
+	// middleware 映射为 4xx 可读中文；故快照校验返回的错误必须是可 errors.Is 判定的
+	// sentinel，且保留原文本以兼容既有日志检索与错误文案断言。
+	r := validRevision()
+	r.SystemPrompt = "   "
+	err := r.Validate()
+	if err == nil {
+		t.Fatal("blank system prompt must fail validation")
+	}
+	if !errors.Is(err, ErrAgentSystemPromptRequired) {
+		t.Fatalf("Validate() = %v, want errors.Is(err, ErrAgentSystemPromptRequired)", err)
+	}
+	if err.Error() != ErrAgentSystemPromptRequired.Error() {
+		t.Fatalf("sentinel error text changed: %q", err.Error())
 	}
 }
 

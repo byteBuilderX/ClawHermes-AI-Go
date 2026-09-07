@@ -99,6 +99,22 @@ describe('RegisterResourceModal', () => {
     expect(api.createBaseline).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the backend .error Chinese message when baseline fails with an API payload (e.g. 被测 Agent 缺 system_prompt)', async () => {
+    // 建档 500→4xx 后，后端返回 {error: 中文, code}；toast 必须展示该中文，
+    // 而不是 axios 的 "Request failed with status code 422"。
+    const backendMessage = '该被测 Agent 尚未配置系统提示词，无法建档。请先在 Agent 配置中填写系统提示词后再登记';
+    api.createBaseline.mockRejectedValue({ response: { data: { error: backendMessage, code: 'AGENT_SYSTEM_PROMPT_REQUIRED' } } });
+    const onRegistered = vi.fn();
+    render(<RegisterResourceModal open registered={[]} onClose={vi.fn()} onRegistered={onRegistered} />);
+    await pickOption('被测资源', '客服 Agent');
+    fireEvent.click(registerButton());
+
+    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({ content: backendMessage })));
+    expect(onRegistered).not.toHaveBeenCalled();
+    expect(api.createBaseline).toHaveBeenCalledTimes(1);
+  });
+
   it('prefills from the deep link and offers register-then-run with an already-registered hint', async () => {
     const onRegisterThenRun = vi.fn();
     const onRegistered = vi.fn();
