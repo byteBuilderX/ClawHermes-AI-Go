@@ -179,29 +179,44 @@ export const executeEvaluationPack = async ({
 
     // 建档收敛到评测中心的统一登记入口（POST /evaluations/resources/agent/:id/baseline，
     // 产出一条 published revision 作为被测 agent 的稳定基线）。不再直插 skill/mcp 的
-    // resource_revisions 或 deployment——skill/mcp 已退出建档。
-    const centerResponse = waitFor(page, '/evaluations/overview', 'GET');
-    await page.goto(`${webURL}/evaluations`);
-    expect((await centerResponse).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
-    await page.getByRole('button', { name: '登记被测资源' }).click();
+    // resource_revisions 或 deployment——skill/mcp 已退出建档。hub 拆除后登记落到被测
+    // 资源详情页：未建档 Alert 就地提供「登记该资源」CTA（URL 深链直达，无 ?action= 残留）。
+    const resourceListResponse = waitFor(page, '/evaluations/resources', 'GET');
+    await page.goto(`${webURL}/evaluations/resources/agent/${agentID}`);
+    expect((await resourceListResponse).status()).toBe(200);
+    // 未建档详情页以 URL 资源 id 作页头主文案（resource 未建档无 resource_name）。
+    await expect(page.getByRole('heading', { name: agentID })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: '登记该资源' })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: '登记该资源' }).click();
     const registerDialog = page.getByRole('dialog', { name: '登记被测资源' });
-    // 被测类型默认 Agent；资源下拉加载线上 agent（GET /agents）后按唯一名搜索选择。
+    // 详情页登记框由 URL 预填 kind+resource_id；仍按唯一名在资源下拉搜索确认建档对象
+    // （资源下拉加载线上 agent：GET /agents）。
     const resourceCombobox = registerDialog.getByRole('combobox', { name: '被测资源' });
     await resourceCombobox.click();
     await resourceCombobox.fill(agentName);
     await page.locator('.ant-select-item-option-content').filter({ hasText: agentName }).click();
     const baselineResponse = waitFor(page, /\/evaluations\/resources\/[^/]+\/[^/]+\/baseline$/, 'POST');
-    // footer 同时含「登记并新建评测」，且 antd 对两汉字按钮插空格（登记→登 记），用锚定正则精确匹配主按钮。
+    // 详情页登记框 footer 仅含「取消」+ 主按钮「登记」（无「登记并新建评测」快捷）；
+    // antd 对两汉字按钮插空格（登记→登 记），用锚定正则精确匹配主按钮。
     await registerDialog.getByRole('button', { name: /^登\s*记$/ }).click();
     const baseline = await baselineResponse;
     expect(baseline.status()).toBe(201);
     agentStableRevisionID = (await baseline.json() as { revision_id: string }).revision_id;
     await expect(registerDialog).toBeHidden();
-    // 登记成功触发中心 reload：资源表每行第二行恒渲染 resource_id（ResourceTable.tsx），
-    // 以 agentID 作唯一建档完成信号（safe_summary.name 未必等于 agentName）。
+    // 登记成功触发详情页 reload：稳定版本标头即建档完成信号（stable_revision_id 为基线 revision）。
+    await expect(page.getByText(new RegExp(`稳定版本\\s*${agentStableRevisionID}`))).toBeVisible({ timeout: 15_000 });
+    expect((await rows<{ id: string; status: string }>(pool, tenantID,
+      'SELECT id,status FROM resource_revisions WHERE id=$1 AND resource_kind=$2 AND resource_id=$3',
+      [agentStableRevisionID, 'agent', agentID]))[0]).toEqual({ id: agentStableRevisionID, status: 'published' });
+    // 建档行回落资源列表页（/evaluations/resources）：资源表每行恒渲染 resource_id，
+    // 以 agentID 作唯一建档持久化信号（safe_summary.name 未必等于 agentName）。
+    await page.goto(`${webURL}/evaluations/resources`);
+    await expect(page.getByRole('heading', { name: '被测资源' })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('row').filter({ hasText: agentID })).toHaveCount(1, { timeout: 15_000 });
 
+    // 离线运行页统一承载「新建评测」（原 hub 入口下沉到 runs 子页）。
+    await page.goto(`${webURL}/evaluations/runs`);
+    await expect(page.getByRole('heading', { name: '离线运行' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: /新建评测/ }).click();
     const createDialog = page.getByRole('dialog', { name: '新建评测' });
     await createDialog.getByRole('combobox', { name: '目标资源' }).click();
@@ -312,7 +327,9 @@ export const executeEvaluationPack = async ({
     await expect(page.getByRole('button', { name: '添加用例' })).toBeVisible({ timeout: 15_000 });
 
     await page.goto(`${webURL}/evaluations`);
-    await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
+    // /evaluations 已整体重定向到离线运行页（hub 拆除，见 Batch 3），路由收敛后无中心 hub。
+    await expect(page).toHaveURL(/\/evaluations\/runs$/);
+    await expect(page.getByRole('heading', { name: '离线运行' })).toBeVisible();
     evidence.ui.push('Evaluation suite list, detail, draft case add/delete, and legacy draft start completed through Chromium');
     evidence.http.push('Suite list/detail GET, draft case POST/DELETE, and legacy draft POST returned successful browser-observed responses');
     evidence.database.push('Suite draft revision and eval_cases reconciled after add, delete, and legacy start');
@@ -515,6 +532,12 @@ export const executeEvaluationPack = async ({
     evidence.http.push('Review pool GET list, GET detail, and POST decision returned successful browser-observed responses');
     evidence.database.push('Review item reconciled to reviewed with verdict pass');
 
+    // P0 route surface 新增：在线观测独立成页（Batch 3），经 observability route 访问一次，
+    // 使 manifest route.evaluations.observability 有对应 produced action。
+    await page.goto(`${webURL}/evaluations/observability`);
+    await expect(page.getByRole('heading', { name: '在线观测' })).toBeVisible({ timeout: 15_000 });
+    evidence.ui.push('Online observability page reached through Chromium');
+
     expect(await rows<{ status: string }>(pool, tenantID,
       'SELECT status FROM optimization_candidates WHERE id=$1', [candidates[0].id])).toEqual([{ status: 'rejected' }]);
     expect(await rows<{ status: string }>(pool, tenantID,
@@ -589,6 +612,11 @@ export const executeEvaluationPack = async ({
     'evaluation.route.evaluations',
     'evaluation.route.evaluations.suites',
     'evaluation.route.evaluations.suites.id',
+    'evaluation.route.evaluations.runs',
+    'evaluation.route.evaluations.evolution',
+    'evaluation.route.evaluations.resources',
+    'evaluation.route.evaluations.observability',
+    'evaluation.route.evaluations.review',
     'evaluation.mutation.post.evaluations.suites',
     'evaluation.mutation.post.evaluations.suites.suiteid.publish',
     'evaluation.mutation.post.evaluations.suites.suiteid.draft',
