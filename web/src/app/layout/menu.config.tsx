@@ -81,7 +81,12 @@ export const buildMenuItems = (user: User | null | undefined): MenuItem[] => {
       label: '评测',
       children: [
         { key: '/evaluations', icon: <ExperimentOutlined />, label: '评测与进化' },
-        { key: '/evaluations/suites', icon: <AppstoreOutlined />, label: '评测集' },
+        { key: '/evaluations/runs', icon: <HistoryOutlined />, label: '离线运行' },
+        { key: '/evaluations/evolution', icon: <BranchesOutlined />, label: '自进化工作区' },
+        { key: '/evaluations/resources', icon: <AppstoreOutlined />, label: '被测资源' },
+        { key: '/evaluations/observability', icon: <ThunderboltOutlined />, label: '在线观测' },
+        { key: '/evaluations/review', icon: <AuditOutlined />, label: '人工评审' },
+        { key: '/evaluations/suites', icon: <DatabaseOutlined />, label: '评测集' },
       ],
     },
     {
@@ -181,4 +186,15 @@ export const resolveOpenKeys = (pathname: string): string[] => {
   )
     return ['platform-admin-group'];
   return [];
+};
+
+// 详情类子路由（/evaluations/runs/:id、/evaluations/resources/:kind/:id、套件详情）没有
+// 独立菜单项，选中态归一为其所属的列表叶子菜单，避免深链后评测分组内无高亮。
+const EVALUATION_DETAIL_ROOTS = ['/evaluations/runs', '/evaluations/resources', '/evaluations/suites'];
+export const resolveSelectedKey = (pathname: string): string => {
+  if (pathname.startsWith('/evaluations/')) {
+    const root = EVALUATION_DETAIL_ROOTS.find((route) => pathname === route || pathname.startsWith(`${route}/`));
+    if (root) return root;
+  }
+  return pathname;
 };

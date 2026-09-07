@@ -447,6 +447,7 @@ export const experimentCommandResponseSchema = z.object({
 export interface EvaluationCenterFilters {
   resource_kind?: CenterKindFilter;
   resource_id?: string;
+  revision_id?: string;
   status?: string;
   cursor?: string;
   limit?: number;
