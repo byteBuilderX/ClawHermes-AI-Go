@@ -430,6 +430,106 @@
       "coverage": "short"
     },
     {
+      "id": "evaluation.route.evaluations.runs",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/runs",
+      "route": "/evaluations/runs",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/runs",
+      "browser_action_id": "evaluation.route.evaluations.runs",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/runs",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.route.evaluations.evolution",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/evolution",
+      "route": "/evaluations/evolution",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/evolution",
+      "browser_action_id": "evaluation.route.evaluations.evolution",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/evolution",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.route.evaluations.resources",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/resources",
+      "route": "/evaluations/resources",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/resources",
+      "browser_action_id": "evaluation.route.evaluations.resources",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/resources",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.route.evaluations.observability",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/observability",
+      "route": "/evaluations/observability",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/observability",
+      "browser_action_id": "evaluation.route.evaluations.observability",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/observability",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
+      "id": "evaluation.route.evaluations.review",
+      "domain": "evaluation",
+      "user_goal": "Open /evaluations/review",
+      "route": "/evaluations/review",
+      "roles": {
+        "allowed": [
+          "tenant_admin",
+          "member"
+        ],
+        "denied": [
+          "unauthenticated"
+        ]
+      },
+      "mutation": "NAVIGATE /evaluations/review",
+      "browser_action_id": "evaluation.route.evaluations.review",
+      "http_evidence": "The route and required read requests complete successfully for /evaluations/review",
+      "db_evidence": "The selected tenant and persisted view state agree with the rendered page",
+      "coverage": "short"
+    },
+    {
       "id": "workflow.route.workflows",
       "domain": "workflow",
       "user_goal": "Open /workflows",
