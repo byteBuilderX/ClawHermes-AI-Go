@@ -1371,6 +1371,10 @@ func (a *BaseAgent) buildPlanNodeExecutor(ec agentExecContext, capGW port.Capabi
 		child.Messages = []port.LLMMessage{systemMessage, {Role: "user", Content: goal}}
 		child.ActivePlan = nil
 		child.PlanToolsDisabled = true
+		// 子任务是干净起点：不继承父循环的振荡换路提示状态（父可能已提示过，
+		// 子任务需独立获得一次 nudge 机会）。
+		child.NoProgressOscillationNudged = false
+		child.NoProgressOscillationResetAt = 0
 		// 子循环的任务是节点目标：预算快照按新任务重新扣减 history 配额（I3）。
 		child.Budget = child.Budget.WithTask(tokenutil.EstimateText(goal))
 		child.MaxLLMSteps = constants.DefaultStepMaxLLMSteps
@@ -1413,6 +1417,10 @@ func (a *BaseAgent) buildDelegateExecutor(ec agentExecContext, capGW port.Capabi
 		child.Steps = 0
 		child.Messages = []port.LLMMessage{systemMessage, userMessage}
 		child.DelegateDepth = parent.DelegateDepth + 1
+		// 子任务是干净起点：不继承父循环的振荡换路提示状态（父可能已提示过，
+		// 子任务需独立获得一次 nudge 机会）。
+		child.NoProgressOscillationNudged = false
+		child.NoProgressOscillationResetAt = 0
 		child.ActivePlan = nil
 		child.PlanToolsDisabled = true
 		// 子循环的任务是委托目标：预算快照按新任务重新扣减 history 配额（I3，
@@ -1583,8 +1591,9 @@ func (a *BaseAgent) collectGraphResult(ctx context.Context, result *AgentResult,
 		result.Degraded = true
 		result.DegradeReason = firstStopLossReason(finalState.StopLossTools)
 	}
-	// 业务终止（如成本预算超限）不是错误：终止原因透传，已产出部分保留。
-	if finalState.TerminatedBy == agentgraph.CostBudgetTerminated {
+	// 业务终止（成本预算超限 / no_progress 停滞等）不是错误：终止原因透传，
+	// 已产出部分保留。新增业务终止值必须在 agentgraph.IsBusinessTermination 登记。
+	if agentgraph.IsBusinessTermination(finalState.TerminatedBy) {
 		result.TerminatedBy = finalState.TerminatedBy
 	}
 	// 完成信号（stratum_complete_task）记录到 result.Metadata 供透出。

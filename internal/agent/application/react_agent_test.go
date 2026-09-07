@@ -66,6 +66,14 @@ func (m *mockCapGW) Route(_ context.Context, req port.CapabilityRequest) (port.C
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 记录 dispatch 时刻快照：克隆 Messages，避免 req.LLM 与调用方 s.Messages 共享
+	// 底层数组——后续 appendLLMResponse 会覆盖已记录尾件（stub 浅拷贝与真实网关
+	// 看到的内容不一致，导致 post-run 断言失真）。
+	if req.LLM != nil {
+		snap := *req.LLM
+		snap.Messages = append([]port.LLMMessage{}, req.LLM.Messages...)
+		req.LLM = &snap
+	}
 	m.requests = append(m.requests, req)
 	if m.idx < len(m.responses) {
 		r := m.responses[m.idx]

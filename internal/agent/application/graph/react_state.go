@@ -99,6 +99,24 @@ type ReActState struct {
 	MaxTokensPerExecution int
 	// TerminatedBy 标记业务终止原因（如 CostBudgetTerminated）；空 = 正常结束。
 	TerminatedBy string
+	// NoProgressOscillationNudged 标记振荡停滞（在少量指纹间反复切换，见
+	// no_progress.go oscillationStall）已提示过换路：首次命中 → 注入 nudge 并置位；
+	// 再命中（nudge 后振荡在锚点之后重新累积满窗口，见
+	// NoProgressOscillationResetAt）→ 直接业务终止，不给第二次转机——避免「每次
+	// nudge 后短暂换路又陷入新振荡」的无限转机循环。仅执行内存态：不入 checkpoint
+	// （恢复只重建 Messages/Steps），plan/delegate 子循环构造时随
+	// NoProgressOscillationResetAt 一并重置（子任务是干净起点，不继承父的振荡提示
+	// 历史）。
+	NoProgressOscillationNudged bool
+	// NoProgressOscillationResetAt 是振荡 nudge 注入时刻的「已完成回合数」锚点。
+	// nudge 之后振荡判定只统计此锚点之后新增的回合：nudge 前的旧振荡轮（某指纹已
+	// 重复 ≥3）不再参与——否则模型收到提示后即使立即换全新指纹，也会因窗口内旧轮
+	// 惯性在下一入口被误杀，拿不到「换路证明期」。模型若 nudge 后继续在少量指纹间
+	// 振荡，需在锚点后重新累积满窗口（≥5 个成功回合）才终止——一次转机，转机后仍
+	// 振荡即停。锚点失效（nudge 后新 user 使任务范围收缩）时由调用方复位本值与
+	// NoProgressOscillationNudged。零值 = 未提示过。不入 checkpoint，plan/delegate
+	// 子循环构造时随 NoProgressOscillationNudged 重置。
+	NoProgressOscillationResetAt int
 	// Budget 是本次执行的预算账本快照（Spec 第 2 节）：初始组装与 ReAct 循环
 	// 共享同一来源，一次执行一个。TaskHint 由 application 层 WithTask 登记
 	// （最新用户输入），已从 HistoryCap 扣减。零值 = 未初始化 → 循环内压缩
