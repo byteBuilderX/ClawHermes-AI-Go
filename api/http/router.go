@@ -193,6 +193,11 @@ func registerEvaluations(r *gin.Engine, c *wiring.Container, requireActive gin.H
 		evaluations.GET("/candidates", h.ListCandidates)
 		evaluations.GET("/experiments", h.ListExperiments)
 		evaluations.GET("/resources/:kind/:id/timeline", h.Timeline)
+		// 版本引用账本（里程碑 7 (0)(c)(d)）：只读、member 可见。路径 kind 限定
+		// skill/agent/mcp/knowledge 单值，revisionId 由 handler/service 校验非空。
+		evaluations.GET("/resources/:kind/:id/revisions", h.ListRevisions)
+		evaluations.GET("/resources/:kind/:id/revisions/:revisionId/references", h.RevisionReferences)
+		evaluations.GET("/resources/:kind/:id/revisions/:revisionId/pass-rate", h.RevisionPassRate)
 		// P1a 运行态观测查询：租户自有运行数据，member 可读（无需 requireAdmin）。
 		// handler 内部在观测服务未装配时 fail closed 503（Task 12 wiring 注入）。
 		evaluations.GET("/observations", h.ListObservations)

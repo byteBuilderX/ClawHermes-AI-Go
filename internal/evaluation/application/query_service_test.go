@@ -209,6 +209,10 @@ type queryRepoStub struct {
 	candidates domain.CandidatePage
 	monFilter  port.MonitorFilter
 	monPage    domain.MonitorResourcesPage
+	ref        domain.ResourceRef
+	revPage    domain.RevisionPage
+	refs       domain.RevisionReferences
+	passRate   domain.RevisionPassRate
 }
 
 func (r *queryRepoStub) Overview(context.Context, string) (domain.CenterOverview, error) {
@@ -242,4 +246,119 @@ func (r *queryRepoStub) MonitorResources(_ context.Context, _ string, filter por
 func (r *queryRepoStub) MonitorTrend(_ context.Context, _ string, filter port.MonitorFilter) (domain.MonitorTrendSeries, error) {
 	r.monFilter = filter
 	return domain.MonitorTrendSeries{}, r.err
+}
+func (r *queryRepoStub) ListRevisions(_ context.Context, _ string, filter port.CenterFilter) (domain.RevisionPage, error) {
+	r.filter = filter
+	return r.revPage, r.err
+}
+func (r *queryRepoStub) RevisionReferences(_ context.Context, _ string, ref domain.ResourceRef) (domain.RevisionReferences, error) {
+	r.ref = ref
+	return r.refs, r.err
+}
+func (r *queryRepoStub) RevisionPassRate(_ context.Context, _ string, ref domain.ResourceRef) (domain.RevisionPassRate, error) {
+	r.ref = ref
+	return r.passRate, r.err
+}
+
+// ---- 里程碑 7：版本引用账本 (0)(c)(d) service 层 ----
+
+// TestQueryServiceListRevisionsRequiresSingleResource 版本表是单被测资源视图：kind 缺省、
+// CSV 组合与 resource_id 缺省一律 400；合法单值放行并透传 filter 到仓库。
+func TestQueryServiceListRevisionsRequiresSingleResource(t *testing.T) {
+	bad := []port.CenterFilter{
+		{ResourceKind: "", ResourceID: "resource-1"},
+		{ResourceKind: "skill", ResourceID: ""},
+		{ResourceKind: "skill,mcp", ResourceID: "resource-1"},
+		{ResourceKind: "invalid", ResourceID: "resource-1"},
+	}
+	for _, filter := range bad {
+		if _, err := NewQueryService(&queryRepoStub{}).ListRevisions(context.Background(), "tenant-1", filter); !errors.Is(err, domain.ErrInvalidCenterQuery) {
+			t.Errorf("filter %+v error = %v, want invalid center query", filter, err)
+		}
+	}
+	repo := &queryRepoStub{}
+	if _, err := NewQueryService(repo).ListRevisions(context.Background(), "tenant-1",
+		port.CenterFilter{ResourceKind: "skill", ResourceID: "resource-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.filter.ResourceKind != "skill" || repo.filter.ResourceID != "resource-1" || repo.filter.Limit != 20 {
+		t.Fatalf("revision filter=%+v, want skill/resource-1 with default limit", repo.filter)
+	}
+}
+
+// TestQueryServiceListRevisionsEmptyToArray 仓库返回空/nil items → service 归一为空数组，
+// not-found 错误映射为 domain 层（HTTP 404 前置）。
+func TestQueryServiceListRevisionsEmptyToArray(t *testing.T) {
+	repo := &queryRepoStub{}
+	page, err := NewQueryService(repo).ListRevisions(context.Background(), "tenant-1",
+		port.CenterFilter{ResourceKind: "skill", ResourceID: "resource-1"})
+	if err != nil || page.Items == nil {
+		t.Fatalf("items = %#v, err = %v; want non-nil empty slice", page.Items, err)
+	}
+	repo.err = port.ErrCenterResourceNotFound
+	if _, err := NewQueryService(repo).ListRevisions(context.Background(), "tenant-1",
+		port.CenterFilter{ResourceKind: "skill", ResourceID: "resource-1"}); !errors.Is(err, domain.ErrCenterResourceNotFound) {
+		t.Fatalf("not found error = %v", err)
+	}
+}
+
+// TestQueryServiceRevisionReferencesRequiresRef 引用账本缺 revision/非法 kind → 400；
+// 合法 ref 透传并保留 repo not-found 映射。
+func TestQueryServiceRevisionReferencesRequiresRef(t *testing.T) {
+	bad := []domain.ResourceRef{
+		{Kind: domain.ResourceKindSkill, ResourceID: "resource-1"},
+		{Kind: domain.ResourceKindSkill, RevisionID: "rev-1"},
+		{Kind: "", ResourceID: "resource-1", RevisionID: "rev-1"},
+		{Kind: domain.ResourceKind("invalid"), ResourceID: "resource-1", RevisionID: "rev-1"},
+	}
+	for _, ref := range bad {
+		if _, err := NewQueryService(&queryRepoStub{}).RevisionReferences(context.Background(), "tenant-1", ref); !errors.Is(err, domain.ErrInvalidCenterQuery) {
+			t.Errorf("ref %+v error = %v, want invalid center query", ref, err)
+		}
+	}
+	repo := &queryRepoStub{}
+	if _, err := NewQueryService(repo).RevisionReferences(context.Background(), "tenant-1", validRevisionRef()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.ref.RevisionID != "rev-1" {
+		t.Fatalf("repo ref = %+v, want rev-1 forwarded", repo.ref)
+	}
+	repo.err = port.ErrCenterResourceNotFound
+	if _, err := NewQueryService(repo).RevisionReferences(context.Background(), "tenant-1", validRevisionRef()); !errors.Is(err, domain.ErrCenterResourceNotFound) {
+		t.Fatalf("not found error = %v", err)
+	}
+}
+
+// TestQueryServiceRevisionReferencesNormalizesGroups 各明细组 nil → 空数组（诚实空态）；
+// deployment 为 nil 透传（保持 null，不捏造成空对象）。
+func TestQueryServiceRevisionReferencesNormalizesGroups(t *testing.T) {
+	repo := &queryRepoStub{}
+	result, err := NewQueryService(repo).RevisionReferences(context.Background(), "tenant-1", validRevisionRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SubjectRuns == nil || result.PinnedRuns == nil || result.Candidates == nil || result.Experiments == nil {
+		t.Fatalf("groups not normalized: %+v", result)
+	}
+	if result.Deployment != nil {
+		t.Fatalf("deployment = %+v, want nil when no deployment row", result.Deployment)
+	}
+}
+
+// TestQueryServiceRevisionPassRate 通过率摘要转发校验 + RecentRuns nil → 空数组 +
+// not-found 映射；pass_rate 内容（含 null）是 repo 诚实空态，service 不做二次加工。
+func TestQueryServiceRevisionPassRate(t *testing.T) {
+	bad := domain.ResourceRef{Kind: domain.ResourceKindSkill, ResourceID: "resource-1"}
+	if _, err := NewQueryService(&queryRepoStub{}).RevisionPassRate(context.Background(), "tenant-1", bad); !errors.Is(err, domain.ErrInvalidCenterQuery) {
+		t.Fatalf("bad ref error = %v", err)
+	}
+	repo := &queryRepoStub{}
+	result, err := NewQueryService(repo).RevisionPassRate(context.Background(), "tenant-1", validRevisionRef())
+	if err != nil || result.RecentRuns == nil {
+		t.Fatalf("recent runs = %#v, err = %v; want non-nil empty slice", result.RecentRuns, err)
+	}
+	repo.err = port.ErrCenterResourceNotFound
+	if _, err := NewQueryService(repo).RevisionPassRate(context.Background(), "tenant-1", validRevisionRef()); !errors.Is(err, domain.ErrCenterResourceNotFound) {
+		t.Fatalf("not found error = %v", err)
+	}
 }

@@ -34,6 +34,16 @@ type CenterQueryRepository interface {
 	Timeline(context.Context, string, CenterFilter) (domain.TimelinePage, error)
 	MonitorResources(context.Context, string, MonitorFilter) (domain.MonitorResourcesPage, error)
 	MonitorTrend(context.Context, string, MonitorFilter) (domain.MonitorTrendSeries, error)
+	// ListRevisions (0) 返回被测资源在 resource_revisions 中的 eval 版本表（含
+	// 零引用版本）。资源未建档时返回 ErrCenterResourceNotFound。
+	ListRevisions(context.Context, string, CenterFilter) (domain.RevisionPage, error)
+	// RevisionReferences (c) 返回单 eval 版本的引用方账本：deployment 角色 +
+	// 主体 run + 把它当绑定资源 pin 的其它 run + 候选/基线 + 实验臂。版本不属于
+	// 该资源时返回 ErrCenterResourceNotFound。
+	RevisionReferences(context.Context, string, domain.ResourceRef) (domain.RevisionReferences, error)
+	// RevisionPassRate (d) 返回单 eval 版本通过率摘要（成功/总 run、用例聚合、
+	// 最近 run）。版本不属于该资源时返回 ErrCenterResourceNotFound。
+	RevisionPassRate(context.Context, string, domain.ResourceRef) (domain.RevisionPassRate, error)
 }
 
 type ExecutionResult struct {

@@ -32,6 +32,68 @@ func (contractQueryRepo) ListExperiments(context.Context, string, port.CenterFil
 func (contractQueryRepo) Timeline(context.Context, string, port.CenterFilter) (domain.TimelinePage, error) {
 	return domain.TimelinePage{Items: []domain.TimelineEvent{}}, nil
 }
+func (contractQueryRepo) ListRevisions(context.Context, string, port.CenterFilter) (domain.RevisionPage, error) {
+	return domain.RevisionPage{Items: []domain.RevisionSummary{
+		{
+			ID: "rev-1", ResourceKind: domain.ResourceKindSkill, ResourceID: "resource-1",
+			Source: string(domain.RevisionSourceManual), Status: "published",
+			SafeSummary: map[string]any{"version_label": "v1"}, CreatedBy: "user-1",
+			CreatedAt: time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC),
+		},
+		{
+			ID: "rev-2", ResourceKind: domain.ResourceKindSkill, ResourceID: "resource-1",
+			ParentRevisionID: "rev-1", Source: string(domain.RevisionSourceOptimization), Status: "draft",
+			SafeSummary: map[string]any{"version_label": "v2"}, CreatedBy: "user-2",
+			CreatedAt: time.Date(2026, 9, 3, 9, 30, 0, 0, time.UTC),
+		},
+	}}, nil
+}
+
+func (contractQueryRepo) RevisionReferences(context.Context, string, domain.ResourceRef) (domain.RevisionReferences, error) {
+	pr := 1
+	return domain.RevisionReferences{
+		Deployment: &domain.RevisionDeployment{Role: "stable", StableRevisionID: "rev-1", CanaryPercent: 0},
+		SubjectRuns: []domain.RunSummary{{
+			ID: "run-subj-1", ResourceID: "resource-1", RevisionID: "rev-1", Status: "succeeded",
+			ResourceKind: domain.ResourceKindSkill, Passed: true, TotalCases: 12, PassedCases: 11,
+			CreatedBy: "user-1", CreatedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC),
+		}},
+		PinnedRuns: []domain.RevisionPinnedRun{{
+			RunID: "run-pin-1", ResourceKind: domain.ResourceKindAgent, ResourceID: "agent-1",
+			Status: "succeeded", Passed: true, TotalCases: 5, PassedCases: 5,
+			CreatedAt: time.Date(2026, 9, 2, 11, 0, 0, 0, time.UTC),
+		}},
+		Candidates: []domain.RevisionCandidateRef{{
+			ID: "cand-1", RevisionID: "rev-9", ParentRevisionID: "rev-1", Role: "baseline",
+			Source: string(domain.RevisionSourceOptimization), Status: "proposed", Rank: &pr,
+			CreatedAt: time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC),
+		}},
+		Experiments: []domain.RevisionExperimentRef{{
+			ID: "exp-1", Role: "stable", StableRevisionID: "rev-1", CanaryRevisionID: "rev-5",
+			Status: "running", StagePercent: 10, Recommendation: "hold",
+			CreatedAt: time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC),
+		}},
+	}, nil
+}
+
+func (contractQueryRepo) RevisionPassRate(context.Context, string, domain.ResourceRef) (domain.RevisionPassRate, error) {
+	rate := 0.9166666666666666
+	return domain.RevisionPassRate{
+		SucceededRuns: 1, TotalRuns: 2, PassedCases: 11, TotalCases: 12, PassRate: &rate,
+		RecentRuns: []domain.RunSummary{
+			{
+				ID: "run-subj-1", ResourceID: "resource-1", RevisionID: "rev-1", Status: "succeeded",
+				ResourceKind: domain.ResourceKindSkill, Passed: true, TotalCases: 12, PassedCases: 11,
+				CreatedBy: "user-1", CreatedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "run-fail-1", ResourceID: "resource-1", RevisionID: "rev-1", Status: "failed",
+				ResourceKind: domain.ResourceKindSkill, Passed: false, TotalCases: 12, PassedCases: 0,
+				CreatedBy: "user-3", CreatedAt: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}, nil
+}
 
 func (contractQueryRepo) MonitorResources(context.Context, string, port.MonitorFilter) (domain.MonitorResourcesPage, error) {
 	return domain.MonitorResourcesPage{

@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain"
 	"github.com/byteBuilderX/stratum/internal/evaluation/domain/port"
+	"github.com/byteBuilderX/stratum/pkg/constants"
 	"github.com/byteBuilderX/stratum/pkg/storage/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -337,6 +339,293 @@ func (r *PgCenterQueryRepository) Timeline(ctx context.Context, tenantID string,
 		page.Items = page.Items[:filter.Limit]
 	}
 	return page, wrapCenterQuery("timeline", e)
+}
+
+// ListRevisions (0) 返回被测资源在 resource_revisions 中的 eval 版本表（含零引用
+// 版本，created_at DESC 游标分页）。资源在 resource_revisions 无任何行（未建档）
+// → ErrCenterResourceNotFound，与 Timeline 存在性语义一致。
+func (r *PgCenterQueryRepository) ListRevisions(ctx context.Context, tenantID string, filter port.CenterFilter) (domain.RevisionPage, error) {
+	var page domain.RevisionPage
+	ct, cid, err := cursorValues(filter.Cursor)
+	if err != nil {
+		return page, err
+	}
+	err = r.tenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var exists bool
+		if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM resource_revisions WHERE resource_kind=$1 AND resource_id=$2)`, filter.ResourceKind, filter.ResourceID).Scan(&exists); e != nil {
+			return e
+		}
+		if !exists {
+			return port.ErrCenterResourceNotFound
+		}
+		rows, e := tx.Query(ctx, `SELECT id,resource_kind,resource_id,COALESCE(parent_revision_id,''),source,status,safe_summary,created_by,created_at FROM resource_revisions WHERE resource_kind=$1 AND resource_id=$2 AND ($3='' OR status=$3) AND ($4::timestamptz IS NULL OR (created_at,id)<($4,$5)) ORDER BY created_at DESC,id DESC LIMIT $6`, filter.ResourceKind, filter.ResourceID, filter.Status, ct, cid, filter.Limit+1)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item domain.RevisionSummary
+			var kind, parent string
+			var safe []byte
+			if e := rows.Scan(&item.ID, &kind, &item.ResourceID, &parent, &item.Source, &item.Status, &safe, &item.CreatedBy, &item.CreatedAt); e != nil {
+				return e
+			}
+			if parent != "" {
+				item.ParentRevisionID = parent
+			}
+			item.ResourceKind = domain.ResourceKind(kind)
+			item.SafeSummary = parseSanitizedSafeSummary(safe)
+			page.Items = append(page.Items, item)
+		}
+		return rows.Err()
+	})
+	// service 已归一 limit（默认 20）；此处守卫 limit<=0 直接直通防御（新端点不得
+	// 因直调 repo 的零值 limit 触发索引 -1 panic，与 list resources 的 trimResources
+	// 同契约、但新代码不加新 panic 面）。
+	if filter.Limit > 0 && len(page.Items) > filter.Limit {
+		last := page.Items[filter.Limit-1]
+		page.NextCursor = pageCursor(last.CreatedAt, last.ID)
+		page.Items = page.Items[:filter.Limit]
+	}
+	return page, wrapCenterQuery("list revisions", err)
+}
+
+// RevisionReferences (c) 返回单 eval 版本 R 的引用方账本：deployment 角色投影 +
+// subject runs（被评主体即 R 的 run）+ pinned runs（把 R 当绑定资源 pin 的其它
+// run，subject 按 run id 去重）+ candidate/baseline 演进引用 + 实验臂引用。版本
+// 不属于该资源（resource_revisions 无 (kind,id,R) 行）→ ErrCenterResourceNotFound。
+// 各明细组只读陈列、非精确计数，按 created_at 倒序各取一组上限（超限即取最近）。
+func (r *PgCenterQueryRepository) RevisionReferences(ctx context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionReferences, error) {
+	var result domain.RevisionReferences
+	err := r.tenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if !revisionBelongsToResource(ctx, tx, ref) {
+			return port.ErrCenterResourceNotFound
+		}
+		deployment, e := loadRevisionDeployment(ctx, tx, ref)
+		if e != nil {
+			return e
+		}
+		if deployment != nil {
+			result.Deployment = deployment
+		}
+		subject, e := scanRevisionSubjectRuns(ctx, tx, ref)
+		if e != nil {
+			return e
+		}
+		result.SubjectRuns = subject
+		exclude := make(map[string]struct{}, len(subject))
+		for _, run := range subject {
+			exclude[run.ID] = struct{}{}
+		}
+		result.PinnedRuns, e = scanRevisionPinnedRuns(ctx, tx, ref, exclude)
+		if e != nil {
+			return e
+		}
+		result.Candidates, e = scanRevisionCandidates(ctx, tx, ref)
+		if e != nil {
+			return e
+		}
+		result.Experiments, e = scanRevisionExperiments(ctx, tx, ref)
+		return e
+	})
+	return result, wrapCenterQuery("revision references", err)
+}
+
+// RevisionPassRate (d) 返回单 eval 版本 R 的通过率摘要：total/succeeded run 数按
+// 版本全部 status 统计；用例 a/b 仅聚合 succeeded run；pass_rate=成功 run 用例通过
+// 合计/用例合计，0 次成功或用例合计为 0 → nil（诚实空态）。recent_runs 该版本最近
+// EvalReferenceRecentRunsLimit 条（含非成功 run，前端筛 succeeded 绘点）。
+func (r *PgCenterQueryRepository) RevisionPassRate(ctx context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionPassRate, error) {
+	var result domain.RevisionPassRate
+	err := r.tenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if !revisionBelongsToResource(ctx, tx, ref) {
+			return port.ErrCenterResourceNotFound
+		}
+		var succeededRuns, passedCases, totalCases int
+		if e := tx.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE status='succeeded')::int,COALESCE(SUM(passed_cases) FILTER (WHERE status='succeeded'),0)::int,COALESCE(SUM(total_cases) FILTER (WHERE status='succeeded'),0)::int FROM eval_runs WHERE resource_kind=$1 AND resource_id=$2 AND revision_id=$3`, ref.Kind, ref.ResourceID, ref.RevisionID).Scan(&succeededRuns, &passedCases, &totalCases); e != nil {
+			return e
+		}
+		if e := tx.QueryRow(ctx, `SELECT COUNT(*)::int FROM eval_runs WHERE resource_kind=$1 AND resource_id=$2 AND revision_id=$3`, ref.Kind, ref.ResourceID, ref.RevisionID).Scan(&result.TotalRuns); e != nil {
+			return e
+		}
+		result.SucceededRuns = succeededRuns
+		result.PassedCases = passedCases
+		result.TotalCases = totalCases
+		if succeededRuns > 0 && totalCases > 0 {
+			rate := float64(passedCases) / float64(totalCases)
+			result.PassRate = &rate
+		}
+		recent, e := scanRevisionSubjectRuns(ctx, tx, ref, constants.EvalReferenceRecentRunsLimit)
+		if e != nil {
+			return e
+		}
+		result.RecentRuns = recent
+		return nil
+	})
+	return result, wrapCenterQuery("revision pass rate", err)
+}
+
+// revisionBelongsToResource 报告 (kind,id,revisionID) 是否存在于 resource_revisions。
+func revisionBelongsToResource(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef) bool {
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM resource_revisions WHERE resource_kind=$1 AND resource_id=$2 AND id=$3)`, ref.Kind, ref.ResourceID, ref.RevisionID).Scan(&exists)
+	return err == nil && exists
+}
+
+// loadRevisionDeployment 读取资源 deployment 行并投影所查版本的臂角色：版本正作为
+// stable/canary 臂时返回对应投影，否则 nil（诚实空态，版本不是当前线上臂）。
+func loadRevisionDeployment(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef) (*domain.RevisionDeployment, error) {
+	var stable, canary string
+	var canaryPercent int
+	err := tx.QueryRow(ctx, `SELECT stable_revision_id,COALESCE(canary_revision_id,''),canary_percent FROM evaluation_deployments WHERE resource_kind=$1 AND resource_id=$2`, ref.Kind, ref.ResourceID).Scan(&stable, &canary, &canaryPercent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case stable != ref.RevisionID && canary != ref.RevisionID:
+		return nil, nil
+	case stable == ref.RevisionID && canary == ref.RevisionID:
+		return &domain.RevisionDeployment{Role: "both", StableRevisionID: stable, CanaryRevisionID: canary, CanaryPercent: canaryPercent}, nil
+	case stable == ref.RevisionID:
+		return &domain.RevisionDeployment{Role: "stable", StableRevisionID: stable}, nil
+	default:
+		return &domain.RevisionDeployment{Role: "canary", CanaryRevisionID: canary, CanaryPercent: canaryPercent}, nil
+	}
+}
+
+// scanRevisionSubjectRuns 返回被评主体版本即 ref.RevisionID 的 run（created_at 倒序，
+// limit<=0 时用 EvalReferenceRunsLimit）。RevisionPassRate 的 recent_runs 复用同一扫描。
+func scanRevisionSubjectRuns(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef, limit ...int) ([]domain.RunSummary, error) {
+	bounded := constants.EvalReferenceRunsLimit
+	if len(limit) > 0 && limit[0] > 0 {
+		bounded = limit[0]
+	}
+	rows, err := tx.Query(ctx, `SELECT id,resource_kind,resource_id,revision_id,status,passed,total_cases,passed_cases,created_by,created_at FROM eval_runs WHERE resource_kind=$1 AND resource_id=$2 AND revision_id=$3 ORDER BY created_at DESC,id DESC LIMIT $4`, ref.Kind, ref.ResourceID, ref.RevisionID, bounded)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.RunSummary{}
+	for rows.Next() {
+		var item domain.RunSummary
+		var kind string
+		if err := rows.Scan(&item.ID, &kind, &item.ResourceID, &item.RevisionID, &item.Status, &item.Passed, &item.TotalCases, &item.PassedCases, &item.CreatedBy, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.ResourceKind = domain.ResourceKind(kind)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// scanRevisionPinnedRuns 收窄候选：context_snapshot 文本含 ref.RevisionID 的 run 按
+// created_at 倒序取 EvalReferenceRunsLimit 条；Go decode 后仅保留 revisionID 出现在
+// 任一 PinnedAssignments map 值中的行（值命中=该版本被作为绑定资源 pin；键命名空间
+// 因跨产品侧 id 语义不统一只做值比较），并跳过 subjectRuns 已含的 run id。
+func scanRevisionPinnedRuns(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef, exclude map[string]struct{}) ([]domain.RevisionPinnedRun, error) {
+	rows, err := tx.Query(ctx, `SELECT id,resource_kind,resource_id,status,passed,total_cases,passed_cases,context_snapshot,created_at FROM eval_runs WHERE context_snapshot::text LIKE '%'||$1||'%' ORDER BY created_at DESC,id DESC LIMIT $2`, ref.RevisionID, constants.EvalReferenceRunsLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.RevisionPinnedRun{}
+	for rows.Next() {
+		var item domain.RevisionPinnedRun
+		var kind string
+		var snapshot []byte
+		if err := rows.Scan(&item.RunID, &kind, &item.ResourceID, &item.Status, &item.Passed, &item.TotalCases, &item.PassedCases, &snapshot, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.ResourceKind = domain.ResourceKind(kind)
+		if _, dup := exclude[item.RunID]; dup {
+			continue
+		}
+		snap, decodeErr := decodeContextSnapshot(snapshot)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if snap == nil || !pinnedAssignmentsContain(snap.PinnedAssignments, ref.RevisionID) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// pinnedAssignmentsContain 报告 revisionID 是否为任一 PinnedAssignments map 的绑定
+// 版本值（SkillAgentRevision/SkillRevisions/MCPRevisions/KnowledgeRevisions）。
+func pinnedAssignmentsContain(pinned domain.PinnedAssignments, revisionID string) bool {
+	return pinnedValueContains(pinned.SkillAgentRevision, revisionID) ||
+		pinnedValueContains(pinned.SkillRevisions, revisionID) ||
+		pinnedValueContains(pinned.MCPRevisions, revisionID) ||
+		pinnedValueContains(pinned.KnowledgeRevisions, revisionID)
+}
+
+func pinnedValueContains(entries map[string]string, revisionID string) bool {
+	for _, value := range entries {
+		if value == revisionID {
+			return true
+		}
+	}
+	return false
+}
+
+// scanRevisionCandidates 返回把 ref.RevisionID 作为候选（revision_id）或基线
+// （parent_revision_id）的优化候选行；两者同值时优先记 candidate。
+func scanRevisionCandidates(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef) ([]domain.RevisionCandidateRef, error) {
+	rows, err := tx.Query(ctx, `SELECT c.id,c.revision_id,c.parent_revision_id,c.source,c.status,c.rank,c.created_at FROM optimization_candidates c JOIN optimization_jobs j ON j.id=c.optimization_job_id WHERE j.resource_kind=$1 AND j.resource_id=$2 AND (c.revision_id=$3 OR c.parent_revision_id=$3) ORDER BY c.created_at DESC,c.id DESC LIMIT $4`, ref.Kind, ref.ResourceID, ref.RevisionID, constants.EvalReferenceCandidatesLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.RevisionCandidateRef{}
+	for rows.Next() {
+		var item domain.RevisionCandidateRef
+		if err := rows.Scan(&item.ID, &item.RevisionID, &item.ParentRevisionID, &item.Source, &item.Status, &item.Rank, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		if item.RevisionID == ref.RevisionID {
+			item.Role = "candidate"
+		} else {
+			item.Role = "baseline"
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// scanRevisionExperiments 返回把 ref.RevisionID 作为 stable/canary 臂的实验行；两臂
+// 同值时 role=both。
+func scanRevisionExperiments(ctx context.Context, tx pgx.Tx, ref domain.ResourceRef) ([]domain.RevisionExperimentRef, error) {
+	rows, err := tx.Query(ctx, `SELECT id,stable_revision_id,canary_revision_id,status,stage_percent,recommendation,created_at FROM evaluation_experiments WHERE resource_kind=$1 AND resource_id=$2 AND (stable_revision_id=$3 OR canary_revision_id=$3) ORDER BY created_at DESC,id DESC LIMIT $4`, ref.Kind, ref.ResourceID, ref.RevisionID, constants.EvalReferenceExperimentsLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.RevisionExperimentRef{}
+	for rows.Next() {
+		var item domain.RevisionExperimentRef
+		if err := rows.Scan(&item.ID, &item.StableRevisionID, &item.CanaryRevisionID, &item.Status, &item.StagePercent, &item.Recommendation, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.Role = revisionExperimentRole(ref.RevisionID, item.StableRevisionID, item.CanaryRevisionID)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func revisionExperimentRole(revisionID, stable, canary string) string {
+	switch {
+	case stable == revisionID && canary == revisionID:
+		return "both"
+	case stable == revisionID:
+		return "stable"
+	default:
+		return "canary"
+	}
 }
 
 func wrapCenterQuery(operation string, err error) error {

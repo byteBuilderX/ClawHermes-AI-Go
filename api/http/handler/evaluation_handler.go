@@ -74,6 +74,12 @@ type evaluationQueryService interface {
 	Timeline(context.Context, string, port.CenterFilter) (domain.TimelinePage, error)
 	MonitorResources(context.Context, string, port.MonitorFilter) (domain.MonitorResourcesPage, error)
 	MonitorTrend(context.Context, string, port.MonitorFilter) (domain.MonitorTrendSeries, error)
+	// ListRevisions (0) 返回单被测资源的 eval 版本表（含零引用版本）。
+	ListRevisions(context.Context, string, port.CenterFilter) (domain.RevisionPage, error)
+	// RevisionReferences (c) 返回单 eval 版本的引用方账本。
+	RevisionReferences(context.Context, string, domain.ResourceRef) (domain.RevisionReferences, error)
+	// RevisionPassRate (d) 返回单 eval 版本通过率摘要。
+	RevisionPassRate(context.Context, string, domain.ResourceRef) (domain.RevisionPassRate, error)
 }
 
 type evaluationCandidateCommandService interface {
@@ -751,6 +757,58 @@ func (h *EvaluationHandler) Timeline(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.TimelinePage, error) {
 		return h.queries.Timeline(c.Request.Context(), t, f)
 	}, c.Param("kind"), c.Param("id"))
+}
+
+// ListRevisions (0) 被测资源 eval 版本表。kind/id 来自路径参数；单资源约束
+// （非 CSV、resource_id 必填）由 service 校验为 400。
+func (h *EvaluationHandler) ListRevisions(c *gin.Context) {
+	queryPage(c, func(t string, f port.CenterFilter) (domain.RevisionPage, error) {
+		return h.queries.ListRevisions(c.Request.Context(), t, f)
+	}, c.Param("kind"), c.Param("id"))
+}
+
+// revisionScoped 组装并校验版本作用域引用（kind/id/revisionId 路径参数必填）。
+// 路径参数非法 → 400；资源/版本不存在由 service 经 error middleware 映射 404。
+func (h *EvaluationHandler) revisionScoped(c *gin.Context) (tenantID string, ref domain.ResourceRef, ok bool) {
+	tenantID, ok = tenantIDFromCtx(c)
+	if !ok {
+		respondMissingTenant(c)
+		return
+	}
+	ref = domain.ResourceRef{Kind: domain.ResourceKind(c.Param("kind")),
+		ResourceID: c.Param("id"), RevisionID: c.Param("revisionId")}
+	if err := ref.Validate(); err != nil {
+		_ = c.Error(middleware.NewHTTPError(http.StatusBadRequest, err))
+		ok = false
+		return
+	}
+	return tenantID, ref, true
+}
+
+func (h *EvaluationHandler) RevisionReferences(c *gin.Context) {
+	tenantID, ref, ok := h.revisionScoped(c)
+	if !ok {
+		return
+	}
+	result, err := h.queries.RevisionReferences(c.Request.Context(), tenantID, ref)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *EvaluationHandler) RevisionPassRate(c *gin.Context) {
+	tenantID, ref, ok := h.revisionScoped(c)
+	if !ok {
+		return
+	}
+	result, err := h.queries.RevisionPassRate(c.Request.Context(), tenantID, ref)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func commandInput(c *gin.Context) (evalapp.ExperimentCommandInput, bool) {

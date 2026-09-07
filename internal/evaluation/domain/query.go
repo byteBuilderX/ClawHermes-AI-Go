@@ -265,3 +265,100 @@ type MonitorTrendSeries struct {
 	Series       []MonitorTrendPoint `json:"series"`
 	Runs         []RunProcessPoint   `json:"runs"`
 }
+
+// ---- 版本引用账本（里程碑 7：单 eval 版本引用 usage 与通过率摘要）----
+
+// RevisionSummary 是被测资源单个 eval 版本行（资源详情「版本引用账本」表用，
+// 含零引用版本）。safe_summary 携带 version_label/resource_name 等脱敏元信息，
+// 前端按 status 对比 deployment 标记「当前稳定」。
+type RevisionSummary struct {
+	ID               string         `json:"id"`
+	ResourceKind     ResourceKind   `json:"resource_kind"`
+	ResourceID       string         `json:"resource_id"`
+	ParentRevisionID string         `json:"parent_revision_id,omitempty"`
+	Source           string         `json:"source"`
+	Status           string         `json:"status"`
+	SafeSummary      map[string]any `json:"safe_summary"`
+	CreatedBy        string         `json:"created_by,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+}
+
+// RevisionPage (0) 端点资源 eval 版本表分页响应。
+type RevisionPage struct {
+	Items      []RevisionSummary `json:"items"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+// RevisionDeployment 是所查版本在 evaluation_deployments 中的角色投影；无部署行时
+// references.deployment 为 null。Role 取值 stable|canary|both（同一版本同时作稳定与
+// 金丝雀臂的退化态）。
+type RevisionDeployment struct {
+	Role             string `json:"role"`
+	StableRevisionID string `json:"stable_revision_id,omitempty"`
+	CanaryRevisionID string `json:"canary_revision_id,omitempty"`
+	CanaryPercent    int    `json:"canary_percent"`
+}
+
+// RevisionPinnedRun 是「把本版本作为绑定资源 pin 进其它 run」的一条引用行：本版本
+// 不是该 run 的被测主体，而是被测主体执行时固化的绑定 skill/mcp/knowledge 版本。
+// 判定走 Go decode context_snapshot.PinnedAssignments 值命中，不依赖落库 JSON 键大小写。
+type RevisionPinnedRun struct {
+	RunID        string       `json:"run_id"`
+	ResourceKind ResourceKind `json:"resource_kind"` // 执行评测的主体资源
+	ResourceID   string       `json:"resource_id"`
+	Status       string       `json:"status"`
+	Passed       bool         `json:"passed"`
+	TotalCases   int          `json:"total_cases"`
+	PassedCases  int          `json:"passed_cases"`
+	CreatedAt    time.Time    `json:"created_at"`
+}
+
+// RevisionCandidateRef 是引用本版本的优化候选行：Role=candidate 表示本版本是候选版本
+// （revision_id 命中），Role=baseline 表示本版本是候选的父基线（parent_revision_id 命中）。
+type RevisionCandidateRef struct {
+	ID               string    `json:"id"`
+	RevisionID       string    `json:"revision_id"`
+	ParentRevisionID string    `json:"parent_revision_id"`
+	Role             string    `json:"role"`
+	Source           string    `json:"source"`
+	Status           string    `json:"status"`
+	Rank             *int      `json:"rank,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// RevisionExperimentRef 是引用本版本的实验行：Role=stable|canary|both。
+type RevisionExperimentRef struct {
+	ID               string    `json:"id"`
+	Role             string    `json:"role"`
+	StableRevisionID string    `json:"stable_revision_id"`
+	CanaryRevisionID string    `json:"canary_revision_id"`
+	Status           string    `json:"status"`
+	StagePercent     int       `json:"stage_percent"`
+	Recommendation   string    `json:"recommendation"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// RevisionReferences (c) 端点：单 eval 版本的全量引用方账本。subject_runs 是被评主体
+// 版本即本版本的 run（eval_runs.revision_id 命中）；pinned_runs 是把它当绑定资源 pin
+// 的其它 run；candidates/experiments 是本版本作为候选/基线或实验臂的演进引用。各明细
+// 数组始终为非 nil（无引用 → 空数组）；deployment 无部署行时为 null（诚实空态）。
+type RevisionReferences struct {
+	Deployment  *RevisionDeployment     `json:"deployment"`
+	SubjectRuns []RunSummary            `json:"subject_runs"`
+	PinnedRuns  []RevisionPinnedRun     `json:"pinned_runs"`
+	Candidates  []RevisionCandidateRef  `json:"candidates"`
+	Experiments []RevisionExperimentRef `json:"experiments"`
+}
+
+// RevisionPassRate (d) 端点：单 eval 版本通过率摘要。总/成功 run 数按该版本全部
+// status 统计；用例 a/b 仅聚合 succeeded run；pass_rate=成功 run 用例通过合计/用例
+// 合计，0 次成功或用例合计为 0 → null（诚实空态，不伪 0）。recent_runs 最近
+// EvalReferenceRecentRunsLimit 条（含非成功，created_at 降序），前端筛 succeeded 绘点。
+type RevisionPassRate struct {
+	SucceededRuns int          `json:"succeeded_runs"`
+	TotalRuns     int          `json:"total_runs"`
+	PassedCases   int          `json:"passed_cases"`
+	TotalCases    int          `json:"total_cases"`
+	PassRate      *float64     `json:"pass_rate"`
+	RecentRuns    []RunSummary `json:"recent_runs"`
+}

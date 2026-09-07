@@ -309,6 +309,7 @@ func withTenantAndUser(tenantID, userID string) gin.HandlerFunc {
 type fakeEvaluationQueries struct {
 	tenantID     string
 	filter       port.CenterFilter
+	ref          domain.ResourceRef
 	monitorKind  string
 	monitorID    string
 	monitorFrom  *time.Time
@@ -347,6 +348,22 @@ func (f *fakeEvaluationQueries) ListExperiments(context.Context, string, port.Ce
 }
 func (f *fakeEvaluationQueries) Timeline(context.Context, string, port.CenterFilter) (domain.TimelinePage, error) {
 	return domain.TimelinePage{}, nil
+}
+func (f *fakeEvaluationQueries) ListRevisions(_ context.Context, tenantID string, filter port.CenterFilter) (domain.RevisionPage, error) {
+	f.tenantID, f.filter = tenantID, filter
+	return domain.RevisionPage{Items: []domain.RevisionSummary{{ID: "rev-1", ResourceKind: domain.ResourceKindSkill,
+		ResourceID: filter.ResourceID, Source: "manual", Status: "published", SafeSummary: map[string]any{}}}}, nil
+}
+func (f *fakeEvaluationQueries) RevisionReferences(_ context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionReferences, error) {
+	f.tenantID, f.ref = tenantID, ref
+	return domain.RevisionReferences{SubjectRuns: []domain.RunSummary{}, PinnedRuns: []domain.RevisionPinnedRun{},
+		Candidates: []domain.RevisionCandidateRef{}, Experiments: []domain.RevisionExperimentRef{}}, nil
+}
+func (f *fakeEvaluationQueries) RevisionPassRate(_ context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionPassRate, error) {
+	f.tenantID, f.ref = tenantID, ref
+	rate := 0.8
+	return domain.RevisionPassRate{SucceededRuns: 1, TotalRuns: 1, PassedCases: 8, TotalCases: 10,
+		PassRate: &rate, RecentRuns: []domain.RunSummary{}}, nil
 }
 func (f *fakeEvaluationQueries) MonitorResources(_ context.Context, tenantID string, filter port.MonitorFilter) (domain.MonitorResourcesPage, error) {
 	f.tenantID = tenantID
@@ -1293,5 +1310,94 @@ func TestEvaluationHandlerDeleteDraftCaseNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---- 里程碑 7：版本引用账本 (0)(c)(d) handler 层 ----
+
+// TestEvaluationHandlerListRevisions (0) 版本表路径 kind/id 透传到 query service，
+// 成功返回 200 + revision 行。
+func TestEvaluationHandlerListRevisions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	queries := &fakeEvaluationQueries{}
+	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
+	r := gin.New()
+	r.Use(middleware.ErrorHandler(zap.NewNop()))
+	r.GET("/evaluations/resources/:kind/:id/revisions", withTenant("tenant-1"), h.ListRevisions)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/evaluations/resources/skill/skill-1/revisions?limit=5", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if queries.tenantID != "tenant-1" || queries.filter.ResourceKind != "skill" ||
+		queries.filter.ResourceID != "skill-1" || queries.filter.Limit != 5 {
+		t.Fatalf("query not propagated: tenant=%q filter=%+v", queries.tenantID, queries.filter)
+	}
+	var page domain.RevisionPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 || page.Items[0].Status != "published" {
+		t.Fatalf("typed response=%s err=%v", rec.Body.String(), err)
+	}
+}
+
+// TestEvaluationHandlerRevisionReferencesAndPassRate (c)(d) references/pass-rate 路径
+// 组装 ResourceRef 并透传，返回 200。
+func TestEvaluationHandlerRevisionReferencesAndPassRate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	queries := &fakeEvaluationQueries{}
+	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
+
+	t.Run("references", func(t *testing.T) {
+		r := gin.New()
+		r.Use(middleware.ErrorHandler(zap.NewNop()))
+		r.GET("/evaluations/resources/:kind/:id/revisions/:revisionId/references", withTenant("tenant-1"), h.RevisionReferences)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/evaluations/resources/skill/skill-1/revisions/rev-1/references", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if queries.ref != (domain.ResourceRef{Kind: domain.ResourceKindSkill, ResourceID: "skill-1", RevisionID: "rev-1"}) {
+			t.Fatalf("ref not propagated: %+v", queries.ref)
+		}
+		var result domain.RevisionReferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || result.SubjectRuns == nil {
+			t.Fatalf("typed response=%s err=%v", rec.Body.String(), err)
+		}
+	})
+	t.Run("pass-rate", func(t *testing.T) {
+		r := gin.New()
+		r.Use(middleware.ErrorHandler(zap.NewNop()))
+		r.GET("/evaluations/resources/:kind/:id/revisions/:revisionId/pass-rate", withTenant("tenant-1"), h.RevisionPassRate)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/evaluations/resources/skill/skill-1/revisions/rev-1/pass-rate", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var result domain.RevisionPassRate
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || result.RecentRuns == nil ||
+			result.PassRate == nil || *result.PassRate != 0.8 {
+			t.Fatalf("typed response=%s err=%v", rec.Body.String(), err)
+		}
+	})
+}
+
+// TestEvaluationHandlerRevisionScopedRejectsBadKind revision 作用域端点的路径 kind 非法
+// → 400（revisionScoped 在进入 query service 前兜底校验）。
+func TestEvaluationHandlerRevisionScopedRejectsBadKind(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	queries := &fakeEvaluationQueries{}
+	h := NewEvaluationHandler(nil, nil, nil, nil, nil, nil, queries, nil, zap.NewNop())
+	r := gin.New()
+	r.Use(middleware.ErrorHandler(zap.NewNop()))
+	r.GET("/evaluations/resources/:kind/:id/revisions/:revisionId/pass-rate", withTenant("tenant-1"), h.RevisionPassRate)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/evaluations/resources/banana/skill-1/revisions/rev-1/pass-rate", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
