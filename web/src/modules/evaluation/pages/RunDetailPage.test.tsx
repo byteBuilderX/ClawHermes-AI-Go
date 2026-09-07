@@ -20,11 +20,13 @@ const runDetail = {
   results: [],
 };
 const runRow = {
-  id: 'run-1', resource_id: 'agent-1', revision_id: 'rev-a', status: 'succeeded', resource_kind: 'agent',
+  id: 'run-1', resource_id: 'agent-1', resource_name: '客服 Agent', revision_id: 'rev-a',
+  status: 'succeeded', resource_kind: 'agent',
   passed: true, total_cases: 4, passed_cases: 4, created_by: 'u1', created_at: '2026-08-01T00:00:00Z',
 };
 const otherRow = {
-  id: 'run-2', resource_id: 'agent-1', revision_id: 'rev-b', status: 'failed', resource_kind: 'agent',
+  id: 'run-2', resource_id: 'agent-1', resource_name: '客服 Agent', revision_id: 'rev-b',
+  status: 'failed', resource_kind: 'agent',
   passed: false, total_cases: 4, passed_cases: 1, created_by: 'u1', created_at: '2026-08-02T00:00:00Z',
 };
 
@@ -54,7 +56,7 @@ describe('RunDetailPage', () => {
 
   it('composes the run header and facts for an existing run', async () => {
     renderDetail('run-1');
-    expect(await screen.findByText('agent-1 · 锚定版本 rev-a')).toBeInTheDocument();
+    expect(await screen.findByText('客服 Agent · 锚定版本 rev-a')).toBeInTheDocument();
     expect(screen.getByText('Agent')).toBeInTheDocument();
     expect(screen.getByText('运行详情')).toBeInTheDocument();
     // 按该运行所属资源取回归行，供版本对比使用。
@@ -76,7 +78,7 @@ describe('RunDetailPage', () => {
     expect(await screen.findByText('加载失败：boom')).toBeInTheDocument();
     // AntD 双字默认按钮会插入空格，「重试」实为「重 试」。
     fireEvent.click(screen.getByRole('button', { name: /^重\s*试$/ }));
-    expect(await screen.findByText('agent-1 · 锚定版本 rev-a')).toBeInTheDocument();
+    expect(await screen.findByText('客服 Agent · 锚定版本 rev-a')).toBeInTheDocument();
   });
 
   it('navigates back to the run list', async () => {

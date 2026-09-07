@@ -12,6 +12,10 @@ interface EvaluationPackContext { actor: BrowserActor; pool: DatabasePool; evide
 const waitFor = async (page: Page, path: string | RegExp, method: string) => {
   try {
     return await page.waitForResponse((response) => {
+      // 本 helper 只捕获 API XHR/fetch JSON 响应。SPA 导航的 document 请求（page.goto
+      // 到与 API 同路径的路由，如 /evaluations/review）pathname 相同、会先命中并返回
+      // HTML，导致后续 .json() 解析 <!DOCTYPE> 崩溃——先按 resourceType 排除 document。
+      if (response.request().resourceType() === 'document') return false;
       const pathname = new URL(response.url()).pathname;
       return (typeof path === 'string' ? pathname === path : path.test(pathname))
         && response.request().method() === method;
@@ -179,29 +183,47 @@ export const executeEvaluationPack = async ({
 
     // 建档收敛到评测中心的统一登记入口（POST /evaluations/resources/agent/:id/baseline，
     // 产出一条 published revision 作为被测 agent 的稳定基线）。不再直插 skill/mcp 的
-    // resource_revisions 或 deployment——skill/mcp 已退出建档。
-    const centerResponse = waitFor(page, '/evaluations/overview', 'GET');
-    await page.goto(`${webURL}/evaluations`);
-    expect((await centerResponse).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
-    await page.getByRole('button', { name: '登记被测资源' }).click();
+    // resource_revisions 或 deployment——skill/mcp 已退出建档。hub 拆除后登记落到被测
+    // 资源详情页：未建档 Alert 就地提供「登记该资源」CTA（URL 深链直达，无 ?action= 残留）。
+    const resourceListResponse = waitFor(page, '/evaluations/resources', 'GET');
+    await page.goto(`${webURL}/evaluations/resources/agent/${agentID}`);
+    expect((await resourceListResponse).status()).toBe(200);
+    // 未建档详情页以 URL 资源 id 作页头主文案（resource 未建档无 resource_name）。
+    await expect(page.getByRole('heading', { name: agentID })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: '登记该资源' })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: '登记该资源' }).click();
     const registerDialog = page.getByRole('dialog', { name: '登记被测资源' });
-    // 被测类型默认 Agent；资源下拉加载线上 agent（GET /agents）后按唯一名搜索选择。
+    // 详情页登记框由 URL 预填 kind+resource_id（被测资源 select 已有选中值）。antd 单选的
+    // 已选项以 .ant-select-selection-item 覆盖 search input——空态式 combobox.click() 会被
+    // 该项拦截 pointer events。真实用户点击的是 .ant-select-selector（点击后打开下拉并使
+    // search input 可输入）；照此仍按唯一名搜索确认建档对象（资源下拉加载线上 agent：GET
+    // /agents）。
     const resourceCombobox = registerDialog.getByRole('combobox', { name: '被测资源' });
-    await resourceCombobox.click();
+    await resourceCombobox.locator('xpath=ancestor::div[contains(@class,"ant-select-selector")]').click();
     await resourceCombobox.fill(agentName);
     await page.locator('.ant-select-item-option-content').filter({ hasText: agentName }).click();
     const baselineResponse = waitFor(page, /\/evaluations\/resources\/[^/]+\/[^/]+\/baseline$/, 'POST');
-    // footer 同时含「登记并新建评测」，且 antd 对两汉字按钮插空格（登记→登 记），用锚定正则精确匹配主按钮。
+    // 详情页登记框 footer 仅含「取消」+ 主按钮「登记」（无「登记并新建评测」快捷）；
+    // antd 对两汉字按钮插空格（登记→登 记），用锚定正则精确匹配主按钮。
     await registerDialog.getByRole('button', { name: /^登\s*记$/ }).click();
     const baseline = await baselineResponse;
     expect(baseline.status()).toBe(201);
     agentStableRevisionID = (await baseline.json() as { revision_id: string }).revision_id;
     await expect(registerDialog).toBeHidden();
-    // 登记成功触发中心 reload：资源表每行第二行恒渲染 resource_id（ResourceTable.tsx），
-    // 以 agentID 作唯一建档完成信号（safe_summary.name 未必等于 agentName）。
+    // 登记成功触发详情页 reload：稳定版本标头即建档完成信号（stable_revision_id 为基线 revision）。
+    await expect(page.getByText(new RegExp(`稳定版本\\s*${agentStableRevisionID}`))).toBeVisible({ timeout: 15_000 });
+    expect((await rows<{ id: string; status: string }>(pool, tenantID,
+      'SELECT id,status FROM resource_revisions WHERE id=$1 AND resource_kind=$2 AND resource_id=$3',
+      [agentStableRevisionID, 'agent', agentID]))[0]).toEqual({ id: agentStableRevisionID, status: 'published' });
+    // 建档行回落资源列表页（/evaluations/resources）：资源表每行恒渲染 resource_id，
+    // 以 agentID 作唯一建档持久化信号（safe_summary.name 未必等于 agentName）。
+    await page.goto(`${webURL}/evaluations/resources`);
+    await expect(page.getByRole('heading', { name: '被测资源' })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('row').filter({ hasText: agentID })).toHaveCount(1, { timeout: 15_000 });
 
+    // 离线运行页统一承载「新建评测」（原 hub 入口下沉到 runs 子页）。
+    await page.goto(`${webURL}/evaluations/runs`);
+    await expect(page.getByRole('heading', { name: '离线运行' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: /新建评测/ }).click();
     const createDialog = page.getByRole('dialog', { name: '新建评测' });
     await createDialog.getByRole('combobox', { name: '目标资源' }).click();
@@ -312,7 +334,9 @@ export const executeEvaluationPack = async ({
     await expect(page.getByRole('button', { name: '添加用例' })).toBeVisible({ timeout: 15_000 });
 
     await page.goto(`${webURL}/evaluations`);
-    await expect(page.getByRole('heading', { name: '评测与进化中心' })).toBeVisible();
+    // /evaluations 已整体重定向到离线运行页（hub 拆除，见 Batch 3），路由收敛后无中心 hub。
+    await expect(page).toHaveURL(/\/evaluations\/runs$/);
+    await expect(page.getByRole('heading', { name: '离线运行' })).toBeVisible();
     evidence.ui.push('Evaluation suite list, detail, draft case add/delete, and legacy draft start completed through Chromium');
     evidence.http.push('Suite list/detail GET, draft case POST/DELETE, and legacy draft POST returned successful browser-observed responses');
     evidence.database.push('Suite draft revision and eval_cases reconciled after add, delete, and legacy start');
@@ -458,6 +482,12 @@ export const executeEvaluationPack = async ({
       expect(deployment.canary_revision_id).toBeNull();
       await closeDrawerIfOpen(page);
       await page.reload();
+      // 每次命令后的 reload 都等到页面页头（AuthProvider 经 /auth/refresh 恢复会话并
+      // setUser）后再进下一次全文档导航。末次 reload 若不等会话落定就 goto 评审深链，
+      // 新文档的 restoreSession 会用已被前次 refresh 轮换掉（单次消费）的旧 refresh
+      // cookie → 401 "refresh token revoked" → PrivateRoute 跳 /login（真实用户快速
+      // F5+书签深链才会偶发；评审池功能本身无回归，见决策循环后多次实测转绿）。
+      await expect(page.getByRole('heading', { name: '自进化工作区' })).toBeVisible({ timeout: 15_000 });
     }
 
     // ── P1c 人工评审池：列表 / 详情 / 决策 3 端点 ─────────────────────────────
@@ -473,6 +503,10 @@ export const executeEvaluationPack = async ({
     const reviewListResponse = waitFor(page, '/evaluations/review', 'GET');
     // 人工评审池独立成页（Batch 3）：直接导航到 ReviewPoolPage，首屏 GET 即评审列表。
     await page.goto(`${webURL}/evaluations/review`);
+    // Vite dev 全量导航后 React 挂载 + AuthProvider 经 /auth/refresh、/auth/me 恢复会话是
+    // 异步链，headless 实测偶发在 goto 落定后仍持续 >15s 才渲染页头（时序抖动，非功能回归）。
+    // 先等网络静默（Auth bootstrap + 首屏列表请求落定）再断言页头，避免断言在挂载窗口外空转。
+    await page.waitForLoadState('networkidle').catch(() => {});
     await expect(page.getByRole('heading', { name: '人工评审池' })).toBeVisible({ timeout: 15_000 });
     const reviewList = await reviewListResponse;
     expect(reviewList.status()).toBe(200);
@@ -514,6 +548,12 @@ export const executeEvaluationPack = async ({
     evidence.ui.push('Review pool list, detail, and decision completed through Chromium');
     evidence.http.push('Review pool GET list, GET detail, and POST decision returned successful browser-observed responses');
     evidence.database.push('Review item reconciled to reviewed with verdict pass');
+
+    // P0 route surface 新增：在线观测独立成页（Batch 3），经 observability route 访问一次，
+    // 使 manifest route.evaluations.observability 有对应 produced action。
+    await page.goto(`${webURL}/evaluations/observability`);
+    await expect(page.getByRole('heading', { name: '在线观测' })).toBeVisible({ timeout: 15_000 });
+    evidence.ui.push('Online observability page reached through Chromium');
 
     expect(await rows<{ status: string }>(pool, tenantID,
       'SELECT status FROM optimization_candidates WHERE id=$1', [candidates[0].id])).toEqual([{ status: 'rejected' }]);
@@ -589,6 +629,11 @@ export const executeEvaluationPack = async ({
     'evaluation.route.evaluations',
     'evaluation.route.evaluations.suites',
     'evaluation.route.evaluations.suites.id',
+    'evaluation.route.evaluations.runs',
+    'evaluation.route.evaluations.evolution',
+    'evaluation.route.evaluations.resources',
+    'evaluation.route.evaluations.observability',
+    'evaluation.route.evaluations.review',
     'evaluation.mutation.post.evaluations.suites',
     'evaluation.mutation.post.evaluations.suites.suiteid.publish',
     'evaluation.mutation.post.evaluations.suites.suiteid.draft',

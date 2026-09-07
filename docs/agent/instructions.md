@@ -177,6 +177,7 @@ push 触发 CI 后的等待期间，必须先检查 PR base 是否落后于最�
 - 错误通知统一为 `message.error({ content: err.response?.data?.error || '操作失败', duration: 3 })`；成功通知使用 `message.success({ content: '操作成功', duration: 2 })` 或等价的 `duration <= 2` 形式。使用 `message` 和 `Modal.confirm`，禁止 `alert()`、`confirm()` 和提交 `console.log`。
 - 页面不得跨 `pages/` 导入；组件超过 200 行应提取 hook、component 或纯函数。`useEffect` 依赖完整，异步 effect 使用 cancelled 标志清理。
 - 用户可见字符串使用中文。Bearer token 不得存入 localStorage/Web Storage；使用 HttpOnly cookie 或内存 Context。
+- 展示资源/实体时主文案用真实名称（产品元数据 `name`/`label`/`resource_name`），禁止把裸 id（`resource_id`、`revision_id`、`server_id` 等）当名称渲染成可见单元格文本；id 只作 rowKey/路由参数/aria-label 等非可见身份用途，确需展示原文时用弱化次要行或 tooltip 并配真实名称作主文案。名称缺失/DTO 未带名称时显式占位 `—`，不得用 id 冒充名称。
 - Modal 状态命名：`createOpen/editOpen`；loading 命名：`createLoading/deleteLoading`；service 命名：`动词+实体名` 如 `createWorkspace`；Hook 返回值直接解构，不加 `state` 前缀。
 
 ## Logging and security

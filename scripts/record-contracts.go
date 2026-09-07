@@ -123,13 +123,16 @@ func recordDDDRoutes(ddRouter *gin.Engine, jwtSvc iamport.TokenService, outDir s
 		"GET /evaluations/overview": true, "GET /evaluations/resources": true,
 		"GET /evaluations/suites": true, "GET /evaluations/runs": true,
 		"GET /evaluations/candidates": true, "GET /evaluations/experiments": true,
-		"GET /evaluations/resources/:kind/:id/timeline": true,
-		"GET /evaluations/monitoring/resources":         true,
-		"GET /evaluations/monitoring/resources/trend":   true,
-		"POST /evaluations/candidates/:id/reject":       true,
-		"POST /evaluations/experiments/:id/pause":       true,
-		"POST /evaluations/experiments/:id/promote":     true,
-		"POST /evaluations/experiments/:id/rollback":    true,
+		"GET /evaluations/resources/:kind/:id/timeline":                         true,
+		"GET /evaluations/resources/:kind/:id/revisions":                        true,
+		"GET /evaluations/resources/:kind/:id/revisions/:revisionId/references": true,
+		"GET /evaluations/resources/:kind/:id/revisions/:revisionId/pass-rate":  true,
+		"GET /evaluations/monitoring/resources":                                 true,
+		"GET /evaluations/monitoring/resources/trend":                           true,
+		"POST /evaluations/candidates/:id/reject":                               true,
+		"POST /evaluations/experiments/:id/pause":                               true,
+		"POST /evaluations/experiments/:id/promote":                             true,
+		"POST /evaluations/experiments/:id/rollback":                            true,
 	}
 	for _, route := range ddRouter.Routes() {
 		filename := filepath.Join(outDir, goldenName(route.Method, route.Path))
@@ -201,6 +204,8 @@ func recordAuthRoute(router http.Handler, tokens iamport.TokenService, claims ia
 func recordEvalRoute(router http.Handler, tokens iamport.TokenService, method, routePath, outPath string) {
 	path := strings.ReplaceAll(routePath, ":kind", "skill")
 	path = strings.ReplaceAll(path, ":id", "resource-1")
+	// 版本引用账本路由（里程碑 7）额外携带 :revisionId；revision 必填，空值会 400。
+	path = strings.ReplaceAll(path, ":revisionId", "rev-1")
 	if method == http.MethodPost {
 		path = strings.ReplaceAll(routePath, ":id", "experiment-1")
 		if strings.Contains(routePath, "/candidates/") {

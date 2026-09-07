@@ -1,6 +1,5 @@
-import { Route } from 'react-router-dom';
+import { Navigate, Route } from 'react-router-dom';
 
-import { EvaluationCenterPage } from './pages/EvaluationCenterPage';
 import { EvolutionPage } from './pages/EvolutionPage';
 import { ObservabilityPage } from './pages/ObservabilityPage';
 import { ResourceDetailPage } from './pages/ResourceDetailPage';
@@ -14,12 +13,14 @@ import { SuiteListPage } from './pages/SuiteListPage';
 import { PrivateRoute } from '@/modules/iam';
 
 export const evaluationRoutes = [
+  // /evaluations 首页（原「评测与进化中心」hub）已拆除，能力下沉到子页；
+  // 裸路径 SPA 重定向到离线运行页，避免旧书签/外链 404。
   <Route
     key="evaluations"
     path="/evaluations"
     element={
       <PrivateRoute>
-        <EvaluationCenterPage />
+        <Navigate to="/evaluations/runs" replace />
       </PrivateRoute>
     }
   />,

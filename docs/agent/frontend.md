@@ -22,6 +22,7 @@ React 18.3 · Vite 6.4 · Ant Design 5.20 · React Router 7 · Axios 1.18
 - `useEffect` 依赖必须完整；异步 effect 需要 `let cancelled = false` 清理
 - 用 `message` / `Modal.confirm`，禁止 `alert()` / `confirm()`
 - 用户可见字符串全部中文；禁止 `console.log` 提交
+- 展示资源/实体时主文案用真实名称（`name`/`label`/`resource_name`），禁止把裸 id（`resource_id`/`revision_id`/`server_id` 等）当名称渲染为可见单元格文本；id 只作 rowKey/路由/aria-label 等非可见身份用途，确需原文时用弱化次要行或 tooltip 并配真实名称作主文案；名称缺失/DTO 未带名称时显式占位 `—`，不得用 id 冒充名称
 - Token 禁止存 `localStorage`，用 `httpOnly` cookie 或内存 Context
 
 ## 行为常量

@@ -8,6 +8,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useState } from 'react';
 
 import { evaluationApi } from '../api/evaluation.api';
+import { resourceDisplayName } from '../lib/resourceName';
 import type { MonitorResourceSummary, MonitorTrend, RunProcessPoint } from '../model/evaluation';
 
 import { MultiLineTrendChart } from './MultiLineTrendChart';
@@ -132,7 +133,7 @@ export const MonitorResourceDrawer = ({ resource, open, from, to, isMobile, onCl
 
   return (
     <Drawer open={open} onClose={onClose} width={drawerWidth(isMobile)} destroyOnHidden
-      title={`${displayLabel(resource.resource_kind)} ${resource.resource_id} · 评测观测趋势`}>
+      title={`${displayLabel(resource.resource_kind)} ${resourceDisplayName(resource)} · 评测观测趋势`}>
       {error
         ? <Alert type="error" showIcon message={error}
           action={<Button size="small" onClick={() => setTick((value) => value + 1)}>重试</Button>} />

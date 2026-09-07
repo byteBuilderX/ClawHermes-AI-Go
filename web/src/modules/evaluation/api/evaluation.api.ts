@@ -37,9 +37,15 @@ import {
   experimentCommandResponseSchema,
   monitorResourcesPageSchema,
   monitorTrendSchema,
+  revisionPageSchema,
+  revisionPassRateSchema,
+  revisionReferencesSchema,
   type MonitorFilters,
   type MonitorResourcesPage,
   type MonitorTrend,
+  type RevisionPage,
+  type RevisionPassRate,
+  type RevisionReferences,
 } from '../model/evaluation';
 
 import api from '@/services/client';
@@ -85,6 +91,27 @@ export const evaluationApi = {
   getMonitorTrend: async (filters: MonitorFilters): Promise<MonitorTrend> => {
     const response = await api.get('/evaluations/monitoring/resources/trend', { params: filters });
     return monitorTrendSchema.parse(response.data);
+  },
+  // —— 版本引用账本只读端点（GET 读放开；kind 含 skill/mcp 历史只读回溯）——
+  // listRevisions 返回该资源的 eval 版本表（resource_revisions，含零引用版本）。
+  listRevisions: async (kind: ResourceKind, resourceId: string): Promise<RevisionPage> => {
+    const response = await api.get(`/evaluations/resources/${kind}/${encodeURIComponent(resourceId)}/revisions`);
+    return revisionPageSchema.parse(response.data);
+  },
+  // listRevisionReferences 返回单版本的引用方账本：deployment（无部署行时为 null）+
+  // subject_runs/pinned_runs/candidates/experiments（明细数组恒非 nil）。
+  listRevisionReferences: async (kind: ResourceKind, resourceId: string, revisionId: string): Promise<RevisionReferences> => {
+    const response = await api.get(
+      `/evaluations/resources/${kind}/${encodeURIComponent(resourceId)}/revisions/${encodeURIComponent(revisionId)}/references`,
+    );
+    return revisionReferencesSchema.parse(response.data);
+  },
+  // getRevisionPassRate 返回单版本通过率摘要；pass_rate=null 表示 0 次成功/无数值（诚实空态）。
+  getRevisionPassRate: async (kind: ResourceKind, resourceId: string, revisionId: string): Promise<RevisionPassRate> => {
+    const response = await api.get(
+      `/evaluations/resources/${kind}/${encodeURIComponent(resourceId)}/revisions/${encodeURIComponent(revisionId)}/pass-rate`,
+    );
+    return revisionPassRateSchema.parse(response.data);
   },
   createSuite: async (data: { name: string; description?: string; resourceKind: ResourceKind; cases: EvaluationCase[] }) => {
     const { resourceKind, ...body } = data;

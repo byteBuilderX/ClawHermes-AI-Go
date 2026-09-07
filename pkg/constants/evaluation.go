@@ -195,6 +195,19 @@ const (
 	PlatformVerifyNotRecoveredMin = 1  // ≥1 租户未恢复即触发 StratumEvalMultiTenantVerifyNotRecovered
 )
 
+// 版本引用账本（里程碑 7：单版本引用 usage / 通过率摘要端点）明细条数边界。引用
+// 分组与 recent_runs 都是「给前端抽屉陈列明细」的只读细节，非精确计数，超限即取最近。
+const (
+	// EvalReferenceRunsLimit 版本引用账本 subject/pinned run 明细单组上限。
+	EvalReferenceRunsLimit = 20
+	// EvalReferenceCandidatesLimit 版本引用账本 candidate 引用明细上限。
+	EvalReferenceCandidatesLimit = 50
+	// EvalReferenceExperimentsLimit 版本引用账本 experiment 引用明细上限。
+	EvalReferenceExperimentsLimit = 50
+	// EvalReferenceRecentRunsLimit 版本通过率摘要 recent_runs 最近 run 条数（spec (d)）。
+	EvalReferenceRecentRunsLimit = 20
+)
+
 // 评测法官默认判定准则与优化器系统提示词（提示词平台参数化，spec 2026-09-04）。
 // 单一来源：internal/parameters/domain/registry.go 的平台键默认值与 api/wiring 的
 // 兜底共同引用本常量，保证「开箱可见值 == 内置兜底」byte-identical、永不漂移。

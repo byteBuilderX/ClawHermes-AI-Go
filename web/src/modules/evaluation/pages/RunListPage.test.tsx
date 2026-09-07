@@ -6,7 +6,11 @@ import type { RunSummary } from '../model/evaluation';
 
 import { RunListPage } from './RunListPage';
 
-const api = vi.hoisted(() => ({ listRuns: vi.fn() }));
+// 新建评测动作按租户角色门控（isAdmin），页面经 useCreateEvaluation→useTenantRole 读取。
+const role = vi.hoisted(() => ({ isAdmin: true }));
+vi.mock('@/modules/iam', () => ({ useTenantRole: () => role }));
+
+const api = vi.hoisted(() => ({ listRuns: vi.fn(), listResources: vi.fn() }));
 vi.mock('../api/evaluation.api', () => ({ evaluationApi: api }));
 
 const runs: RunSummary[] = [
@@ -31,8 +35,12 @@ const renderList = () => render(
 
 describe('RunListPage', () => {
   beforeEach(() => {
+    role.isAdmin = true;
     api.listRuns.mockReset();
     api.listRuns.mockResolvedValue({ items: runs });
+    // 「新建评测」目标下拉取 agent/knowledge 被测资源；用例不开表单即可空态通过。
+    api.listResources.mockReset();
+    api.listResources.mockResolvedValue({ items: [] });
   });
 
   it('loads and renders offline run rows with anchors and pass counts', async () => {
@@ -56,5 +64,19 @@ describe('RunListPage', () => {
     await waitFor(() => expect(path()).toHaveTextContent('/evaluations/runs/run-1'));
     // 详情跳页展示体取数由 RunDetailPage 承担，列表自身不再触发 getRun。
     expect(api.listRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the create-evaluation modal from the admin header action', async () => {
+    renderList();
+    fireEvent.click(await screen.findByRole('button', { name: '新建评测' }));
+    // 新建评测就地弹框，不再跳 hub。
+    expect(screen.getByRole('dialog', { name: '新建评测' })).toBeInTheDocument();
+  });
+
+  it('keeps the create action hidden from members', async () => {
+    role.isAdmin = false;
+    renderList();
+    await screen.findByText('agent-1');
+    expect(screen.queryByRole('button', { name: '新建评测' })).not.toBeInTheDocument();
   });
 });

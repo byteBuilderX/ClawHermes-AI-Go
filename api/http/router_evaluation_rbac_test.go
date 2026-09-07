@@ -57,7 +57,11 @@ func TestEvaluationEvolutionRoutesRBAC(t *testing.T) {
 	member := signEvaluationToken(t, tokens, "tenant-1", "member")
 	for _, path := range []string{"/evaluations/resources", "/evaluations/suites",
 		"/evaluations/experiments",
-		"/evaluations/resources/skill/skill-1/timeline"} {
+		"/evaluations/resources/skill/skill-1/timeline",
+		// 里程碑 7 版本引用账本只读端点：member 同读放开。
+		"/evaluations/resources/skill/skill-1/revisions",
+		"/evaluations/resources/skill/skill-1/revisions/rev-1/references",
+		"/evaluations/resources/skill/skill-1/revisions/rev-1/pass-rate"} {
 		rec := performEvaluationRequest(r, http.MethodGet, path, member, "", nil)
 		if rec.Code != http.StatusOK {
 			t.Errorf("member GET %s: status=%d body=%s", path, rec.Code, rec.Body.String())
@@ -162,9 +166,14 @@ func TestEvaluationEvolutionRoutesRBAC(t *testing.T) {
 	}
 
 	other := signEvaluationToken(t, tokens, "tenant-2", "member")
-	rec = performEvaluationRequest(r, http.MethodGet, "/evaluations/resources/skill/skill-1/timeline", other, "", nil)
-	if rec.Code != http.StatusNotFound || !strings.HasPrefix(rec.Body.String(), `{"error":`) {
-		t.Fatalf("cross tenant status=%d body=%s", rec.Code, rec.Body.String())
+	for _, path := range []string{"/evaluations/resources/skill/skill-1/timeline",
+		"/evaluations/resources/skill/skill-1/revisions",
+		"/evaluations/resources/skill/skill-1/revisions/rev-1/references",
+		"/evaluations/resources/skill/skill-1/revisions/rev-1/pass-rate"} {
+		rec = performEvaluationRequest(r, http.MethodGet, path, other, "", nil)
+		if rec.Code != http.StatusNotFound || !strings.HasPrefix(rec.Body.String(), `{"error":`) {
+			t.Fatalf("cross tenant %s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
 	}
 	otherAdmin := signEvaluationToken(t, tokens, "tenant-2", "admin")
 	rec = performEvaluationRequest(r, http.MethodPost, "/evaluations/experiments/missing/pause", otherAdmin, "",
@@ -369,4 +378,22 @@ func (*evaluationQueryRepoFake) MonitorResources(context.Context, string, port.M
 }
 func (*evaluationQueryRepoFake) MonitorTrend(context.Context, string, port.MonitorFilter) (domain.MonitorTrendSeries, error) {
 	return domain.MonitorTrendSeries{}, nil
+}
+func (*evaluationQueryRepoFake) ListRevisions(_ context.Context, tenantID string, _ port.CenterFilter) (domain.RevisionPage, error) {
+	if tenantID != "tenant-1" {
+		return domain.RevisionPage{}, port.ErrCenterResourceNotFound
+	}
+	return domain.RevisionPage{}, nil
+}
+func (*evaluationQueryRepoFake) RevisionReferences(_ context.Context, tenantID string, _ domain.ResourceRef) (domain.RevisionReferences, error) {
+	if tenantID != "tenant-1" {
+		return domain.RevisionReferences{}, port.ErrCenterResourceNotFound
+	}
+	return domain.RevisionReferences{}, nil
+}
+func (*evaluationQueryRepoFake) RevisionPassRate(_ context.Context, tenantID string, _ domain.ResourceRef) (domain.RevisionPassRate, error) {
+	if tenantID != "tenant-1" {
+		return domain.RevisionPassRate{}, port.ErrCenterResourceNotFound
+	}
+	return domain.RevisionPassRate{}, nil
 }

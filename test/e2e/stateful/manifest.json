@@ -372,7 +372,7 @@
     {
       "id": "evaluation.route.evaluations",
       "domain": "evaluation",
-      "user_goal": "Open /evaluations",
+      "user_goal": "Access /evaluations and be redirected to the offline runs page",
       "route": "/evaluations",
       "roles": {
         "allowed": [
@@ -1558,7 +1558,7 @@
       "id": "evaluation.mutation.post.evaluations.suites",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/suites",
-      "route": "/evaluations",
+      "route": "/evaluations/runs",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1578,7 +1578,7 @@
       "id": "evaluation.mutation.post.evaluations.suites.suiteid.publish",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/suites/:suiteId/publish",
-      "route": "/evaluations",
+      "route": "/evaluations/runs",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1658,7 +1658,7 @@
       "id": "evaluation.mutation.post.evaluations.runs",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/runs",
-      "route": "/evaluations",
+      "route": "/evaluations/runs",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1678,7 +1678,7 @@
       "id": "evaluation.mutation.post.evaluations.optimizations",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/optimizations",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1698,7 +1698,7 @@
       "id": "evaluation.mutation.post.evaluations.experiments",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/experiments",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1718,7 +1718,7 @@
       "id": "evaluation.mutation.post.evaluations.feedback",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/feedback",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1738,7 +1738,7 @@
       "id": "evaluation.mutation.post.evaluations.candidates.candidateid.reject",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/candidates/:candidateId/reject",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1758,7 +1758,7 @@
       "id": "evaluation.mutation.post.evaluations.experiments.experimentid.pause",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/experiments/:experimentId/pause",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1778,7 +1778,7 @@
       "id": "evaluation.mutation.post.evaluations.experiments.experimentid.promote",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/experiments/:experimentId/promote",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1798,7 +1798,7 @@
       "id": "evaluation.mutation.post.evaluations.experiments.experimentid.rollback",
       "domain": "evaluation",
       "user_goal": "Complete POST /evaluations/experiments/:experimentId/rollback",
-      "route": "/evaluations",
+      "route": "/evaluations/evolution",
       "roles": {
         "allowed": [
           "tenant_admin",
@@ -1818,7 +1818,7 @@
       "id": "evaluation.mutation.get.evaluations.review",
       "domain": "evaluation",
       "user_goal": "Load the review pool items as tenant_admin",
-      "route": "/evaluations",
+      "route": "/evaluations/review",
       "roles": {
         "allowed": [
           "tenant_admin"
@@ -1838,7 +1838,7 @@
       "id": "evaluation.mutation.get.evaluations.review.id",
       "domain": "evaluation",
       "user_goal": "Open one review item detail as tenant_admin",
-      "route": "/evaluations",
+      "route": "/evaluations/review",
       "roles": {
         "allowed": [
           "tenant_admin"
@@ -1858,7 +1858,7 @@
       "id": "evaluation.mutation.post.evaluations.review.id.decision",
       "domain": "evaluation",
       "user_goal": "Submit a human review decision as tenant_admin",
-      "route": "/evaluations",
+      "route": "/evaluations/review",
       "roles": {
         "allowed": [
           "tenant_admin"

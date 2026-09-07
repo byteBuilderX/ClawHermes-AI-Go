@@ -137,6 +137,63 @@ func (s *QueryService) Timeline(ctx context.Context, tenantID string, filter por
 	}
 	return p, mapCenterError(e)
 }
+func (s *QueryService) ListRevisions(ctx context.Context, tenantID string, filter port.CenterFilter) (domain.RevisionPage, error) {
+	f, e := normalizeCenterFilter(filter)
+	if e != nil {
+		return domain.RevisionPage{}, e
+	}
+	// ListRevisions 是单被测资源的版本表：kind 必须单个合法值（非 CSV）、resource_id 必填。
+	if f.ResourceKind == "" || strings.Contains(f.ResourceKind, ",") || strings.TrimSpace(f.ResourceID) == "" {
+		return domain.RevisionPage{}, fmt.Errorf("%w: resource required", domain.ErrInvalidCenterQuery)
+	}
+	p, e := s.repo.ListRevisions(ctx, tenantID, f)
+	if p.Items == nil {
+		p.Items = []domain.RevisionSummary{}
+	}
+	return p, mapCenterError(e)
+}
+
+// validateRevisionRef 校验版本引用/通过率查询的目标资源版本（kind/id/revisionID 非空）。
+func validateRevisionRef(ref domain.ResourceRef) error {
+	if err := ref.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", domain.ErrInvalidCenterQuery, err)
+	}
+	return nil
+}
+
+// normalizeRevisionReferences 保证引用账本各明细组为非 nil（诚实空态 → 空数组）。
+func normalizeRevisionReferences(r *domain.RevisionReferences) {
+	if r.SubjectRuns == nil {
+		r.SubjectRuns = []domain.RunSummary{}
+	}
+	if r.PinnedRuns == nil {
+		r.PinnedRuns = []domain.RevisionPinnedRun{}
+	}
+	if r.Candidates == nil {
+		r.Candidates = []domain.RevisionCandidateRef{}
+	}
+	if r.Experiments == nil {
+		r.Experiments = []domain.RevisionExperimentRef{}
+	}
+}
+func (s *QueryService) RevisionReferences(ctx context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionReferences, error) {
+	if e := validateRevisionRef(ref); e != nil {
+		return domain.RevisionReferences{}, e
+	}
+	result, e := s.repo.RevisionReferences(ctx, tenantID, ref)
+	normalizeRevisionReferences(&result)
+	return result, mapCenterError(e)
+}
+func (s *QueryService) RevisionPassRate(ctx context.Context, tenantID string, ref domain.ResourceRef) (domain.RevisionPassRate, error) {
+	if e := validateRevisionRef(ref); e != nil {
+		return domain.RevisionPassRate{}, e
+	}
+	result, e := s.repo.RevisionPassRate(ctx, tenantID, ref)
+	if result.RecentRuns == nil {
+		result.RecentRuns = []domain.RunSummary{}
+	}
+	return result, mapCenterError(e)
+}
 
 func normalizeMonitorFilter(filter port.MonitorFilter) (port.MonitorFilter, error) {
 	if err := validateMonitorFilter(filter); err != nil {
