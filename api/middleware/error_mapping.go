@@ -155,6 +155,7 @@ var errorStatusTable = map[error]int{
 	evaldomain.ErrDeleteForbidden:                 http.StatusForbidden,
 	agentapp.ErrInvalidSkill:                      http.StatusUnprocessableEntity,
 	agentdomain.ErrProposalApplyFailed:            http.StatusUnprocessableEntity,
+	agentdomain.ErrAgentSystemPromptRequired:      http.StatusUnprocessableEntity,
 	skilldomain.ErrConcurrencyLimit:               http.StatusTooManyRequests,
 	knowledgedomain.ErrIngestQueueFull:            http.StatusTooManyRequests,
 	iamapp.ErrForbiddenAdminOrOwner:               http.StatusForbidden,
