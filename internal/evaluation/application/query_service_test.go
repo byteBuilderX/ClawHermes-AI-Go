@@ -29,6 +29,33 @@ func TestQueryServiceNormalizesLimitsAndDelegates(t *testing.T) {
 	}
 }
 
+// TestQueryServiceListRunsPassesRevisionFilter Batch 6 (b)：revision_id 是资源详情回归
+// 视图的服务端过滤口，service 层透传到仓库（不改谓词语义），空值放行全量并回落默认分页。
+func TestQueryServiceListRunsPassesRevisionFilter(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           port.CenterFilter
+		wantRevision string
+		wantLimit    int
+	}{
+		{name: "revision passthrough", in: port.CenterFilter{ResourceKind: "skill", ResourceID: "shared",
+			RevisionID: "rev-a", Limit: 5}, wantRevision: "rev-a", wantLimit: 5},
+		{name: "empty revision defaults limit", in: port.CenterFilter{}, wantRevision: "", wantLimit: 20},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &queryRepoStub{}
+			svc := NewQueryService(repo)
+			if _, err := svc.ListRuns(context.Background(), "tenant-1", tc.in); err != nil {
+				t.Fatal(err)
+			}
+			if repo.filter.RevisionID != tc.wantRevision || repo.filter.Limit != tc.wantLimit {
+				t.Fatalf("ListRuns filter=%+v, want revision=%q limit=%d", repo.filter, tc.wantRevision, tc.wantLimit)
+			}
+		})
+	}
+}
+
 func TestQueryServiceRejectsInvalidFilters(t *testing.T) {
 	svc := NewQueryService(&queryRepoStub{})
 	tests := []port.CenterFilter{
@@ -194,7 +221,8 @@ func (r *queryRepoStub) ListResources(_ context.Context, _ string, filter port.C
 func (r *queryRepoStub) ListSuites(context.Context, string, port.CenterFilter) (domain.SuitePage, error) {
 	return domain.SuitePage{}, r.err
 }
-func (r *queryRepoStub) ListRuns(context.Context, string, port.CenterFilter) (domain.RunPage, error) {
+func (r *queryRepoStub) ListRuns(_ context.Context, _ string, filter port.CenterFilter) (domain.RunPage, error) {
+	r.filter = filter
 	return domain.RunPage{}, r.err
 }
 func (r *queryRepoStub) ListCandidates(context.Context, string, port.CenterFilter) (domain.CandidatePage, error) {
