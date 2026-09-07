@@ -194,8 +194,16 @@ describe('ResourceDetailPage', () => {
   });
 
   it('offers admin a register CTA that opens a local modal for an unregistered agent', async () => {
+    // 复现真实后端语义：未登记资源建档行列表为空(200)，但 Timeline 对不存在的资源 404。
+    // 两段式取数应在建档行缺失时短路、不触碰 Timeline——若把 404 并入并行批，CTA 会被
+    // 整页错误盖掉（本里程碑的登记闭环缺陷）。
+    api.getTimeline.mockRejectedValue(Object.assign(new Error('Request failed with status code 404'), {
+      response: { status: 404, data: { error: 'evaluation center resource not found' } },
+    }));
     renderDetail('/evaluations/resources/agent/agent-9');
     expect(await screen.findByText(/尚未在评测中心建档/)).toBeInTheDocument();
+    // 建档行缺失 → 短路，不发 Timeline 请求（它会对未登记资源 404）。
+    expect(api.getTimeline).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '登记该资源' }));
     // 就地弹窗登记，不再跳 hub：URL 保持资源详情且无 ?action= 状态残留。
     await waitFor(() => expect(api.listAgents).toHaveBeenCalled());
