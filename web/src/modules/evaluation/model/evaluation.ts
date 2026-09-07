@@ -573,3 +573,101 @@ export interface MonitorFilters {
   to?: string;
   limit?: number;
 }
+
+// —— 版本引用账本（里程碑 7 §C：(0)(c)(d) 消费）——
+
+// revisionSummarySchema 是资源详情「版本引用账本」的 eval 版本行（含零引用版本）。
+// safe_summary 带 version_label/resource_name 等脱敏元信息；id 即 eval 版本标识，
+// 与 runs/deployments 引用的 revision_id 同域，前端据其对比「当前稳定」。
+export const revisionSummarySchema = z.object({
+  id: z.string(),
+  resource_kind: resourceKindSchema,
+  resource_id: z.string(),
+  resource_name: z.string().optional(),
+  parent_revision_id: z.string().optional(),
+  source: z.string(),
+  status: z.string(),
+  safe_summary: safeSummarySchema.default({}),
+  created_by: z.string().optional(),
+  created_at: z.string(),
+}).strict();
+export type RevisionSummary = z.infer<typeof revisionSummarySchema>;
+export const revisionPageSchema = page(revisionSummarySchema);
+export type RevisionPage = z.infer<typeof revisionPageSchema>;
+
+// revisionDeploymentSchema 是所查版本在 evaluation_deployments 中的角色投影
+// （role=stable|canary|both）；无部署行时后端返回 null（诚实空态）。
+export const revisionDeploymentSchema = z.object({
+  role: z.enum(['stable', 'canary', 'both']),
+  stable_revision_id: z.string().optional(),
+  canary_revision_id: z.string().optional(),
+  canary_percent: z.number(),
+}).strict();
+export type RevisionDeployment = z.infer<typeof revisionDeploymentSchema>;
+
+// revisionPinnedRunSchema：把本版本作为绑定资源 pin 进其它 run 的引用行。该 run 的
+// 被测主体资源经 resource_kind/resource_id 承载（展示真名需 resource_name → safe_summary）。
+export const revisionPinnedRunSchema = z.object({
+  run_id: z.string(),
+  resource_kind: resourceKindSchema,
+  resource_id: z.string(),
+  resource_name: z.string().optional(),
+  status: z.string(),
+  passed: z.boolean(),
+  total_cases: z.number(),
+  passed_cases: z.number(),
+  created_at: z.string(),
+}).strict();
+export type RevisionPinnedRun = z.infer<typeof revisionPinnedRunSchema>;
+
+// revisionCandidateRefSchema：版本作为优化候选（role=candidate，revision_id 命中）或
+// 候选父基线（role=baseline，parent_revision_id 命中）。
+export const revisionCandidateRefSchema = z.object({
+  id: z.string(),
+  revision_id: z.string(),
+  parent_revision_id: z.string(),
+  role: z.enum(['candidate', 'baseline']),
+  source: z.string(),
+  status: z.string(),
+  rank: z.number().optional(),
+  created_at: z.string(),
+}).strict();
+export type RevisionCandidateRef = z.infer<typeof revisionCandidateRefSchema>;
+
+// revisionExperimentRefSchema：版本作为实验臂（role=stable|canary|both）。
+export const revisionExperimentRefSchema = z.object({
+  id: z.string(),
+  role: z.enum(['stable', 'canary', 'both']),
+  stable_revision_id: z.string(),
+  canary_revision_id: z.string(),
+  status: z.string(),
+  stage_percent: z.number(),
+  recommendation: z.string(),
+  created_at: z.string(),
+}).strict();
+export type RevisionExperimentRef = z.infer<typeof revisionExperimentRefSchema>;
+
+// revisionReferencesSchema (c)：单 eval 版本的引用方账本。subject_runs 被测主体即本
+// 版本；pinned_runs 把它当绑定资源 pin；candidates/experiments 演进引用；deployment
+// 无部署行时为 null。明细数组恒非 nil（无引用 → 空数组）。
+export const revisionReferencesSchema = z.object({
+  deployment: revisionDeploymentSchema.nullable(),
+  subject_runs: z.array(runSummarySchema),
+  pinned_runs: z.array(revisionPinnedRunSchema),
+  candidates: z.array(revisionCandidateRefSchema),
+  experiments: z.array(revisionExperimentRefSchema),
+}).strict();
+export type RevisionReferences = z.infer<typeof revisionReferencesSchema>;
+
+// revisionPassRateSchema (d)：单 eval 版本通过率摘要。pass_rate=成功 run 用例通过/
+// 用例合计，0 次成功或用例合计为 0 → null（诚实空态，不伪 0）；recent_runs 最近
+// 若干条（含非成功，created_at 降序），前端筛 succeeded 绘点。
+export const revisionPassRateSchema = z.object({
+  succeeded_runs: z.number(),
+  total_runs: z.number(),
+  passed_cases: z.number(),
+  total_cases: z.number(),
+  pass_rate: z.number().nullable(),
+  recent_runs: z.array(runSummarySchema),
+}).strict();
+export type RevisionPassRate = z.infer<typeof revisionPassRateSchema>;

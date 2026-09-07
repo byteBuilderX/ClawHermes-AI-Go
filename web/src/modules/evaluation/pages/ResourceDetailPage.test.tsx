@@ -13,6 +13,9 @@ const api = vi.hoisted(() => ({
   listCandidates: vi.fn(),
   listExperiments: vi.fn(),
   getTimeline: vi.fn(),
+  listRevisions: vi.fn(),
+  listRevisionReferences: vi.fn(),
+  getRevisionPassRate: vi.fn(),
   listAgents: vi.fn(),
   listWorkspaces: vi.fn(),
 }));
@@ -52,6 +55,41 @@ const timelineEvent = {
   id: 'evt-1', kind: 'evaluation_run', status: 'passed', summary: '运行 run-1 通过', resource_id: 'skill-1',
   resource_kind: 'skill', created_at: '2026-07-23T00:00:00Z',
 };
+// 版本引用账本 fixtures：revision 行携带产品版本对照 version_label（建档时写入
+// resource_revisions.safe_summary）；references 覆盖 deployment/subject/pinned/candidate/
+// experiment 四类引用，供抽屉测试校验。
+const revisionV1 = {
+  id: 'v1', resource_id: 'skill-1', resource_kind: 'skill', source: 'register',
+  status: 'active', safe_summary: { version_label: '1.0.0' }, created_at: '2026-07-23T00:00:00Z',
+};
+const revisionV2 = {
+  id: 'v2', resource_id: 'skill-1', resource_kind: 'skill', source: 'optimize',
+  status: 'active', safe_summary: { version_label: '1.1.0' }, created_at: '2026-07-23T02:00:00Z',
+};
+const referencesData = {
+  deployment: { role: 'stable', stable_revision_id: 'v1', canary_percent: 0 },
+  subject_runs: [runV1],
+  pinned_runs: [{
+    run_id: 'run-pin', resource_kind: 'agent', resource_id: 'agent-5', resource_name: '线上客服A',
+    status: 'succeeded', passed: true, total_cases: 3, passed_cases: 3, created_at: '2026-07-23T01:00:00Z',
+  }],
+  candidates: [{
+    id: 'cand-ref', revision_id: 'v1', parent_revision_id: 'v0', role: 'candidate',
+    source: 'optimize', status: 'proposed', created_at: '2026-07-23T01:00:00Z',
+  }],
+  experiments: [{
+    id: 'exp-ref', role: 'stable', stable_revision_id: 'v1', canary_revision_id: 'v2',
+    status: 'running', stage_percent: 25, recommendation: 'promote', created_at: '2026-07-23T01:00:00Z',
+  }],
+};
+const emptyReferences = { deployment: null, subject_runs: [], pinned_runs: [], candidates: [], experiments: [] };
+const passRateData = {
+  succeeded_runs: 2, total_runs: 3, passed_cases: 6, total_cases: 9, pass_rate: 0.6666667,
+  recent_runs: [runV1, runV2],
+};
+const emptyPassRate = {
+  succeeded_runs: 0, total_runs: 0, passed_cases: 0, total_cases: 0, pass_rate: null, recent_runs: [],
+};
 
 const LocationProbe = () => {
   const location = useLocation();
@@ -81,6 +119,9 @@ describe('ResourceDetailPage', () => {
     api.listCandidates.mockResolvedValue({ items: [] });
     api.listExperiments.mockResolvedValue({ items: [] });
     api.getTimeline.mockResolvedValue({ items: [] });
+    api.listRevisions.mockResolvedValue({ items: [] });
+    api.listRevisionReferences.mockResolvedValue(emptyReferences);
+    api.getRevisionPassRate.mockResolvedValue(emptyPassRate);
     api.listAgents.mockResolvedValue([]);
     api.listWorkspaces.mockResolvedValue([]);
   });
@@ -184,6 +225,67 @@ describe('ResourceDetailPage', () => {
     renderDetail('/evaluations/resources/skill/skill-1');
     fireEvent.click(await screen.findByRole('button', { name: /打开技能工作台/ }));
     await waitFor(() => expect(path()).toHaveTextContent('/skills/skill-1/workspace'));
+  });
+
+  it('lists the version ledger with product version labels and marks the current stable', async () => {
+    api.listResources.mockResolvedValue({ items: [skillRow] });
+    api.listRevisions.mockResolvedValue({ items: [revisionV1, revisionV2] });
+    renderDetail('/evaluations/resources/skill/skill-1');
+
+    // 账本按 listRevisions 装载；产品版本列以 version_label 为主文案，id 弱化次要行。
+    expect(await screen.findByText('1.0.0')).toBeInTheDocument();
+    expect(screen.getByText('1.1.0')).toBeInTheDocument();
+    expect(api.listRevisions).toHaveBeenCalledWith('skill', 'skill-1');
+    // 当前稳定版本行打「当前稳定」标，非稳定行不误导为占位 —。
+    // 当前稳定版本行打「当前稳定」标（cell role 避开同名列标题 th）；非稳定行不误导为占位 —。
+    expect(screen.getByRole('cell', { name: '当前稳定' })).toBeInTheDocument();
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    // 每行都提供「引用分析」入口；头部分析按钮作用于当前稳定版本。
+    expect(screen.getAllByRole('button', { name: '引用分析' }).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows an honest empty ledger for a registered resource without eval revisions', async () => {
+    api.listResources.mockResolvedValue({ items: [skillRow] });
+    renderDetail('/evaluations/resources/skill/skill-1');
+    expect(await screen.findByText('该资源还没有评测版本（建档后逐版本记录评估证据）')).toBeInTheDocument();
+  });
+
+  it('opens the revision ledger drawer and shows deployment, pass-rate and grouped references', async () => {
+    api.listResources.mockResolvedValue({ items: [skillRow] });
+    api.listRevisions.mockResolvedValue({ items: [revisionV1, revisionV2] });
+    api.listRevisionReferences.mockResolvedValue(referencesData);
+    api.getRevisionPassRate.mockResolvedValue(passRateData);
+    renderDetail('/evaluations/resources/skill/skill-1');
+
+    // 先等账本装载，保证头部「引用分析」作用于当前稳定版本 v1 的产品标签 1.0.0。
+    expect(await screen.findByText('1.0.0')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: '引用分析' })[0]);
+
+    expect(await screen.findByText(/版本 1.0.0 引用分析/)).toBeInTheDocument();
+    expect(screen.getByText('主体运行 1')).toBeInTheDocument();
+    expect(screen.getByText('绑定引用 1')).toBeInTheDocument();
+    expect(screen.getByText('优化候选 1')).toBeInTheDocument();
+    expect(screen.getByText('金丝雀实验 1')).toBeInTheDocument();
+    // 该版本正是当前部署稳定版本 → 部署标签打「本版本」，否则诚实标注未参与。
+    expect(screen.getByText('稳定 v1（本版本）')).toBeInTheDocument();
+    // 通过率摘要：(d) pass_rate 成功 run 用例聚合，mini 折线复用最近 run。
+    expect(screen.getByText('66.7%')).toBeInTheDocument();
+    expect(screen.getByText(/成功 run 2 \/ 共 3/)).toBeInTheDocument();
+    expect(screen.getByText('最近运行通过率')).toBeInTheDocument();
+    // 引用明细：主体 run → 运行详情页；candidate/experiment 提供自进化工作区入口。
+    expect(screen.getByText('线上客服A')).toBeInTheDocument();
+    expect(screen.getByText('前往自进化工作区查看命令记录')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    await waitFor(() => expect(path()).toHaveTextContent('/evaluations/runs/run-1'));
+    expect(api.listRevisionReferences).toHaveBeenCalledWith('skill', 'skill-1', 'v1');
+    expect(api.getRevisionPassRate).toHaveBeenCalledWith('skill', 'skill-1', 'v1');
+  });
+
+  it('surfaces a ledger load error with a retry action', async () => {
+    api.listResources.mockResolvedValue({ items: [skillRow] });
+    api.listRevisions.mockRejectedValue(new Error('boom'));
+    renderDetail('/evaluations/resources/skill/skill-1');
+    expect(await screen.findByText(/加载版本账本失败/)).toBeInTheDocument();
   });
 
   it('guards an unknown resource kind without fetching', async () => {

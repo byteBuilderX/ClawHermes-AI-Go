@@ -7,6 +7,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { evaluationApi } from '../api/evaluation.api';
 import { HealthTrendChart, type HealthTrendPoint } from '../components/HealthTrendChart';
 import { RegisterResourceModal } from '../components/RegisterResourceModal';
+import { ResourceNameCell } from '../components/ResourceNameCell';
+import { RevisionReferenceDrawer } from '../components/RevisionReferenceDrawer';
 import { TimelinePanel } from '../components/TimelinePanel';
 import { StatusTag, displayLabel, runDisplayStatus } from '../components/evaluationView';
 import { useResourceDetailPage } from '../hooks/useResourceDetailPage';
@@ -16,26 +18,16 @@ import type {
   ExperimentSummary,
   RegistrableResourceKind,
   ResourceKind,
+  RevisionSummary,
   RunSummary,
 } from '../model/evaluation';
 import { registrableResourceKinds, resourceKindSchema } from '../model/evaluation';
+import { pickVersionLabel, productEditPath } from '../model/productLinks';
 
 import { useTenantRole } from '@/modules/iam';
 
 const VALID_KINDS = resourceKindSchema.options;
 const REGISTRABLE: readonly string[] = registrableResourceKinds;
-
-// productEditPath 把被测资源引导回产品模块的配置/版本页（只读外链，不做双写）：
-// promote 会经 ApplyPublishedRevision 写回产品稳定版本，此处仅查看对应关系。
-const productEditPath = (kind: ResourceKind, id: string): { path: string; label: string } | null => {
-  switch (kind) {
-    case 'agent': return { path: `/agents/${encodeURIComponent(id)}/edit`, label: 'Agent 配置页' };
-    case 'knowledge': return { path: `/knowledge/${encodeURIComponent(id)}`, label: '知识库版本页' };
-    case 'skill': return { path: `/skills/${encodeURIComponent(id)}/workspace`, label: '技能工作台' };
-    case 'mcp': return { path: `/mcp/${encodeURIComponent(id)}/edit`, label: 'MCP 配置页' };
-    default: return null;
-  }
-};
 
 const timeLabel = (value: string) => new Date(value).toLocaleString('zh-CN', {
   month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
@@ -55,6 +47,38 @@ export const ResourceDetailPage = () => {
   // 页头主文案用真名（建档后后端下发 resource_name / safe_summary）；未建档时无名称来源，
   // 退回 URL 中的资源 id 作身份标识（登记 CTA 语境）。真名与 id 不同时把 id 降级为弱化 code。
   const pageTitle = resource ? resourceDisplayName(resource) : resourceId;
+  const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
+  const [revisionsLoading, setRevisionsLoading] = useState(false);
+  const [revisionsError, setRevisionsError] = useState('');
+  const [revisionTick, setRevisionTick] = useState(0);
+  const [analyze, setAnalyze] = useState<{ revisionId: string; revisionLabel: string } | null>(null);
+  // stableRevisionId 供头部「引用分析」直接作用于当前稳定版本；登记后 reload 会把 resource
+  // 换成新对象，effect 依赖 resource 使账本在 (重新)建档后自动重取。
+  const stableRevisionId = resource?.stable_revision_id;
+  const revisionLabelOf = (id: string) => {
+    const row = revisions.find((value) => value.id === id);
+    return row ? (pickVersionLabel(row) ?? id) : id;
+  };
+
+  // 版本引用账本只对已建档资源有意义：resource 存在才拉取该资源 eval 版本表（(0) 端点）。
+  useEffect(() => {
+    if (!kind || !resource) {
+      setRevisions([]);
+      return;
+    }
+    let cancelled = false;
+    setRevisionsLoading(true);
+    setRevisionsError('');
+    evaluationApi.listRevisions(kind, resourceId)
+      .then((pageData) => { if (!cancelled) setRevisions(pageData.items); })
+      .catch((err) => {
+        if (cancelled) return;
+        setRevisionsError(err.response?.data?.error || '加载版本账本失败');
+      })
+      .finally(() => { if (!cancelled) setRevisionsLoading(false); });
+    return () => { cancelled = true; };
+    // resource 参与依赖：未建档→建档的 transition 由 resource 身份变化触发重取。
+  }, [kind, resourceId, resource, revisionTick]);
 
   return <div>
     <Button type="link" icon={<ArrowLeftOutlined />} style={{ paddingLeft: 0, marginBottom: 8 }}
@@ -65,6 +89,10 @@ export const ResourceDetailPage = () => {
       <Tag>{displayLabel(kind)}</Tag>
       {resource && <StatusTag value={resource.status} />}
       {resource && <Typography.Text type="secondary">稳定版本 {resource.stable_revision_id || '未建档'}</Typography.Text>}
+      {stableRevisionId && <Button size="small" onClick={() => setAnalyze({
+        revisionId: stableRevisionId,
+        revisionLabel: revisionLabelOf(stableRevisionId),
+      })}>引用分析</Button>}
     </Flex>}
 
     {error && <Alert type="error" showIcon style={{ marginBottom: 12 }} message={error} action={<Space wrap>
@@ -91,6 +119,11 @@ export const ResourceDetailPage = () => {
           <RunRegressionSection key={`${kind}:${resourceId}`} runs={runs} kind={kind} resourceId={resourceId}
             onOpenRun={(run) => navigate(`/evaluations/runs/${encodeURIComponent(run.id)}`)} />
         </Card>
+        <Card size="small" title="版本引用账本">
+          <VersionLedgerSection revisions={revisions} loading={revisionsLoading} error={revisionsError}
+            stableRevisionId={stableRevisionId} onRetry={() => setRevisionTick((value) => value + 1)}
+            onAnalyze={(revisionId, revisionLabel) => setAnalyze({ revisionId, revisionLabel })} />
+        </Card>
         <Card size="small" title="版本时间线">
           <TimelinePanel events={events} loading={loading} error={error} />
         </Card>
@@ -112,7 +145,47 @@ export const ResourceDetailPage = () => {
       initial={{ kind: kind as RegistrableResourceKind, resource_id: resourceId }} registered={[]}
       onClose={() => setRegisterOpen(false)}
       onRegistered={() => { setRegisterOpen(false); reload(); }} />}
+    {/* 版本引用账本下钻抽屉：行内版本/头部稳定版本 → 该版本 subject/pinned/candidate/
+        experiment 引用与通过率。从详情页进运行详情/自进化工作区，维持既有导航语义。 */}
+    {analyze && kind && resource && <RevisionReferenceDrawer open
+      resourceKind={kind} resourceId={resourceId} resourceName={resourceDisplayName(resource)}
+      revisionId={analyze.revisionId} revisionLabel={analyze.revisionLabel}
+      onClose={() => setAnalyze(null)}
+      onOpenRun={(runId) => navigate(`/evaluations/runs/${encodeURIComponent(runId)}`)}
+      onGoEvolution={() => navigate('/evaluations/evolution')} />}
   </div>;
+};
+
+// VersionLedgerSection 版本引用账本：(0) listRevisions 小表陈列该资源 eval 版本。产品
+// 版本对照列以 safe_summary.version_label 为主文案（缺值显 —），eval 版本 id 弱化次要行；
+// 当前稳定行打 Tag；行「引用分析」开 RevisionReferenceDrawer 查看该版本引用与通过率。
+// 只读、无命令副作用；失败独立 alert + 重试，不阻断其余卡。
+const VersionLedgerSection = ({ revisions, loading, error, stableRevisionId, onRetry, onAnalyze }: {
+  revisions: RevisionSummary[]; loading: boolean; error: string;
+  stableRevisionId?: string; onRetry: () => void;
+  onAnalyze: (revisionId: string, revisionLabel: string) => void;
+}) => {
+  if (error) {
+    return <Alert type="error" showIcon message={error} action={<Space wrap>
+      <Button size="small" onClick={onRetry}>重试</Button>
+    </Space>} />;
+  }
+  const columns: ColumnsType<RevisionSummary> = [
+    { title: '产品版本', render: (_: unknown, row: RevisionSummary) =>
+      <ResourceNameCell name={pickVersionLabel(row) ?? '—'} resourceId={row.id} /> },
+    { title: '来源', dataIndex: 'source', width: 96 },
+    { title: '状态', dataIndex: 'status', width: 96, render: (value: string) => <StatusTag value={value} /> },
+    { title: '建档时间', dataIndex: 'created_at', width: 150, render: (value: string) => timeLabel(value) },
+    { title: '当前稳定', width: 96,
+      render: (_: unknown, row: RevisionSummary) => row.id === stableRevisionId
+        ? <Tag color="blue">当前稳定</Tag> : '—' },
+    { title: '操作', width: 92, render: (_: unknown, row: RevisionSummary) => <Button type="link" size="small"
+      onClick={() => onAnalyze(row.id, pickVersionLabel(row) ?? row.id)}>引用分析</Button> },
+  ];
+  return <Table<RevisionSummary> size="small" rowKey="id" dataSource={revisions} loading={loading}
+    pagination={false} columns={columns}
+    locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+      description="该资源还没有评测版本（建档后逐版本记录评估证据）" /> }} />;
 };
 
 // 运行与回归：本资源离线 run 的 revision 过滤 + 通过率折线 + run 行（点击去运行详情）。
