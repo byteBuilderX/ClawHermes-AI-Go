@@ -40,9 +40,18 @@ type CenterOverview struct {
 	Experiments int `json:"experiments"`
 }
 
+// CenterResourceKey 唯一标识评测中心一个被测资源行（kind+id）。跨模块真名解析
+// （port.CenterResourceNamer）以它为键批量解析，映射回各资源行 DTO 的
+// ResourceName 显示字段；未解析到的键在返回 map 中缺席（前端显式占位 —）。
+type CenterResourceKey struct {
+	Kind       ResourceKind
+	ResourceID string
+}
+
 type ResourceSummary struct {
 	ID               string         `json:"id"`
 	ResourceID       string         `json:"resource_id"`
+	ResourceName     string         `json:"resource_name,omitempty"`
 	Status           string         `json:"status"`
 	StableRevisionID string         `json:"stable_revision_id,omitempty"`
 	LatestRunStatus  string         `json:"latest_run_status,omitempty"`
@@ -90,6 +99,7 @@ type SuiteDetail struct {
 type RunSummary struct {
 	ID           string       `json:"id"`
 	ResourceID   string       `json:"resource_id"`
+	ResourceName string       `json:"resource_name,omitempty"`
 	RevisionID   string       `json:"revision_id"`
 	Status       string       `json:"status"`
 	ResourceKind ResourceKind `json:"resource_kind"`
@@ -102,6 +112,7 @@ type RunSummary struct {
 type CandidateSummary struct {
 	ID               string            `json:"id"`
 	ResourceID       string            `json:"resource_id"`
+	ResourceName     string            `json:"resource_name,omitempty"`
 	RevisionID       string            `json:"revision_id"`
 	ParentRevisionID string            `json:"parent_revision_id"`
 	Source           string            `json:"source"`
@@ -127,6 +138,7 @@ type CandidateSafeDiff struct {
 type ExperimentSummary struct {
 	ID                string            `json:"id"`
 	ResourceID        string            `json:"resource_id"`
+	ResourceName      string            `json:"resource_name,omitempty"`
 	StableRevisionID  string            `json:"stable_revision_id"`
 	CanaryRevisionID  string            `json:"canary_revision_id"`
 	Status            string            `json:"status"`
@@ -223,6 +235,7 @@ type ProcessBaseline struct {
 type MonitorResourceSummary struct {
 	ResourceKind ResourceKind     `json:"resource_kind"`
 	ResourceID   string           `json:"resource_id"`
+	ResourceName string           `json:"resource_name,omitempty"`
 	SampleCount  int              `json:"sample_count"`
 	Quality      []QualityDim     `json:"quality"`
 	Behavior     BehaviorStats    `json:"behavior"`
@@ -275,6 +288,7 @@ type RevisionSummary struct {
 	ID               string         `json:"id"`
 	ResourceKind     ResourceKind   `json:"resource_kind"`
 	ResourceID       string         `json:"resource_id"`
+	ResourceName     string         `json:"resource_name,omitempty"`
 	ParentRevisionID string         `json:"parent_revision_id,omitempty"`
 	Source           string         `json:"source"`
 	Status           string         `json:"status"`
@@ -306,6 +320,7 @@ type RevisionPinnedRun struct {
 	RunID        string       `json:"run_id"`
 	ResourceKind ResourceKind `json:"resource_kind"` // 执行评测的主体资源
 	ResourceID   string       `json:"resource_id"`
+	ResourceName string       `json:"resource_name,omitempty"`
 	Status       string       `json:"status"`
 	Passed       bool         `json:"passed"`
 	TotalCases   int          `json:"total_cases"`

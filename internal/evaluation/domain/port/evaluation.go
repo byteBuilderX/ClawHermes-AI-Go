@@ -46,6 +46,15 @@ type CenterQueryRepository interface {
 	RevisionPassRate(context.Context, string, domain.ResourceRef) (domain.RevisionPassRate, error)
 }
 
+// CenterResourceNamer 解析评测中心资源行的跨模块「真实名称」（agent/skill/mcp 为
+// 产品真名，knowledge 的 resource_id 本身就是 workspace 名 → 恒等返回）。供读
+// handler 在渲染前把 resource_name 富化到资源行 DTO；属纯展示增强：解析是
+// best-effort，某 key 查不到真名时在返回 map 中缺席（绝不报错阻断只读查询）。
+// wiring 以 postgres.WithTenant 注入租户载体后调用产品侧服务实现本接口。
+type CenterResourceNamer interface {
+	ResolveCenterNames(ctx context.Context, tenantID string, keys []domain.CenterResourceKey) (map[domain.CenterResourceKey]string, error)
+}
+
 type ExecutionResult struct {
 	Output     any
 	TraceID    string

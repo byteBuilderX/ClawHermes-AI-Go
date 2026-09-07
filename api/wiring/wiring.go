@@ -88,6 +88,7 @@ func BuildContainer(ctx context.Context, cfg *config.Config, logger *zap.Logger)
 		{"scheduler", c.buildScheduler},
 		{"collab", c.buildCollab},
 		{"evaluation", c.buildEvaluation},
+		{"evaluation-center-namer", c.attachEvaluationCenterNamer},
 		{"publish-gate", c.buildPublishGate},
 		{"platform-verify-worker", c.buildPlatformVerifyWorker},
 	}
@@ -234,6 +235,7 @@ func (c *Container) buildExistingRuntime(ctx context.Context, memPipeline *mempi
 		{"iam", c.buildIAM},
 		{"agent", c.buildAgent},
 		{"evaluation", c.buildEvaluation},
+		{"evaluation-center-namer", c.attachEvaluationCenterNamer},
 	})
 }
 

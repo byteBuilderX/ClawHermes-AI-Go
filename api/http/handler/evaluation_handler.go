@@ -145,7 +145,10 @@ type EvaluationHandler struct {
 	observations evaluationObservationQueryService
 	review       evaluationReviewService
 	deletes      evaluationDeleteService
-	logger       *zap.Logger
+	// namer 解析中心资源行被测资源的跨模块真名（仅展示富化）。nil = 不富化
+	// （contract harness / 未装配），读查询照常返回 resource_name 为空。
+	namer  port.CenterResourceNamer
+	logger *zap.Logger
 }
 
 func NewEvaluationHandler(
@@ -195,6 +198,13 @@ func (h *EvaluationHandler) WithReviewService(service evaluationReviewService) *
 // WithDeleteService 注入全实体删除服务（owner-or-creator 门禁）。
 func (h *EvaluationHandler) WithDeleteService(service evaluationDeleteService) *EvaluationHandler {
 	h.deletes = service
+	return h
+}
+
+// WithCenterResourceNamer 注入中心资源行被测资源的跨模块真名解析器（仅展示富化；
+// nil 时空操作，读查询照常返回）。contract harness 走 nil → 不触发真名查询。
+func (h *EvaluationHandler) WithCenterResourceNamer(namer port.CenterResourceNamer) *EvaluationHandler {
+	h.namer = namer
 	return h
 }
 
@@ -709,7 +719,9 @@ func validateCenterResourceKind(kind string) error {
 	return nil
 }
 
-func queryPage[T any](c *gin.Context, call func(string, port.CenterFilter) (T, error), kind, id string) {
+// queryPage 组装单资源/租户读分页查询并渲染。hooks 在渲染前改写结果（如
+// resource_name 富化展示增强）；缺失时不执行（listSuites/timeline 不经富化）。
+func queryPage[T any](c *gin.Context, call func(string, port.CenterFilter) (T, error), kind, id string, hooks ...func(*gin.Context, string, *T)) {
 	tenantID, ok := tenantIDFromCtx(c)
 	if !ok {
 		respondMissingTenant(c)
@@ -725,13 +737,118 @@ func queryPage[T any](c *gin.Context, call func(string, port.CenterFilter) (T, e
 		_ = c.Error(err)
 		return
 	}
+	for _, hook := range hooks {
+		hook(c, tenantID, &page)
+	}
 	c.JSON(http.StatusOK, page)
+}
+
+// enrichResourceNames 把各行被测资源键（kind+id）批量解析为跨模块真名并写回
+// resource_name。namer 未装配/行内无资源键 → 空操作；解析错误仅 Warn 并以已解析
+// 子集继续 —— 展示富化失败禁止阻断只读查询（未解析键前端显式占位）。
+func enrichResourceNames[T any](namer port.CenterResourceNamer, logger *zap.Logger,
+	c *gin.Context, tenantID string, rows []T, keyOf func(T) domain.CenterResourceKey, assign func(*T, string)) {
+	if namer == nil || len(rows) == 0 {
+		return
+	}
+	keys := make([]domain.CenterResourceKey, 0, len(rows))
+	seen := make(map[domain.CenterResourceKey]struct{}, len(rows))
+	for i := range rows {
+		key := keyOf(rows[i])
+		if key.ResourceID == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return
+	}
+	names, err := namer.ResolveCenterNames(c.Request.Context(), tenantID, keys)
+	if err != nil {
+		logger.Warn("resolve evaluation center resource names",
+			zap.Int("distinct_keys", len(keys)), zap.Error(err))
+	}
+	for i := range rows {
+		if name, ok := names[keyOf(rows[i])]; ok {
+			assign(&rows[i], name)
+		}
+	}
+}
+
+// centerResourceKey 构造资源行解析键；kind 为空/不属被测白名单时仍原样传递，
+// 由 namer 侧对未知 kind 兜底（返回缺席）。
+func centerResourceKey(kind domain.ResourceKind, resourceID string) domain.CenterResourceKey {
+	return domain.CenterResourceKey{Kind: kind, ResourceID: resourceID}
+}
+
+// ---- 各资源行 DTO 的类型化富化封装（每行按其被测资源键解析真名）----
+
+func (h *EvaluationHandler) enrichResourceSummaries(c *gin.Context, tenantID string, rows []domain.ResourceSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.ResourceSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.ResourceSummary, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichRunSummaries(c *gin.Context, tenantID string, rows []domain.RunSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.RunSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.RunSummary, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichCandidateSummaries(c *gin.Context, tenantID string, rows []domain.CandidateSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.CandidateSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.CandidateSummary, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichExperimentSummaries(c *gin.Context, tenantID string, rows []domain.ExperimentSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.ExperimentSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.ExperimentSummary, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichRevisionSummaries(c *gin.Context, tenantID string, rows []domain.RevisionSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.RevisionSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.RevisionSummary, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichPinnedRuns(c *gin.Context, tenantID string, rows []domain.RevisionPinnedRun) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.RevisionPinnedRun) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.RevisionPinnedRun, name string) { r.ResourceName = name })
+}
+
+func (h *EvaluationHandler) enrichMonitorSummaries(c *gin.Context, tenantID string, rows []domain.MonitorResourceSummary) {
+	enrichResourceNames(h.namer, h.logger, c, tenantID, rows,
+		func(r domain.MonitorResourceSummary) domain.CenterResourceKey {
+			return centerResourceKey(r.ResourceKind, r.ResourceID)
+		},
+		func(r *domain.MonitorResourceSummary, name string) { r.ResourceName = name })
 }
 
 func (h *EvaluationHandler) ListResources(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.ResourcePage, error) {
 		return h.queries.ListResources(c.Request.Context(), t, f)
-	}, "", "")
+	}, "", "", func(_ *gin.Context, tenantID string, page *domain.ResourcePage) {
+		h.enrichResourceSummaries(c, tenantID, page.Items)
+	})
 }
 func (h *EvaluationHandler) ListSuites(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.SuitePage, error) {
@@ -741,17 +858,23 @@ func (h *EvaluationHandler) ListSuites(c *gin.Context) {
 func (h *EvaluationHandler) ListRuns(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.RunPage, error) {
 		return h.queries.ListRuns(c.Request.Context(), t, f)
-	}, "", "")
+	}, "", "", func(_ *gin.Context, tenantID string, page *domain.RunPage) {
+		h.enrichRunSummaries(c, tenantID, page.Items)
+	})
 }
 func (h *EvaluationHandler) ListCandidates(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.CandidatePage, error) {
 		return h.queries.ListCandidates(c.Request.Context(), t, f)
-	}, "", "")
+	}, "", "", func(_ *gin.Context, tenantID string, page *domain.CandidatePage) {
+		h.enrichCandidateSummaries(c, tenantID, page.Items)
+	})
 }
 func (h *EvaluationHandler) ListExperiments(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.ExperimentPage, error) {
 		return h.queries.ListExperiments(c.Request.Context(), t, f)
-	}, "", "")
+	}, "", "", func(_ *gin.Context, tenantID string, page *domain.ExperimentPage) {
+		h.enrichExperimentSummaries(c, tenantID, page.Items)
+	})
 }
 func (h *EvaluationHandler) Timeline(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.TimelinePage, error) {
@@ -764,7 +887,9 @@ func (h *EvaluationHandler) Timeline(c *gin.Context) {
 func (h *EvaluationHandler) ListRevisions(c *gin.Context) {
 	queryPage(c, func(t string, f port.CenterFilter) (domain.RevisionPage, error) {
 		return h.queries.ListRevisions(c.Request.Context(), t, f)
-	}, c.Param("kind"), c.Param("id"))
+	}, c.Param("kind"), c.Param("id"), func(_ *gin.Context, tenantID string, page *domain.RevisionPage) {
+		h.enrichRevisionSummaries(c, tenantID, page.Items)
+	})
 }
 
 // revisionScoped 组装并校验版本作用域引用（kind/id/revisionId 路径参数必填）。
@@ -795,6 +920,9 @@ func (h *EvaluationHandler) RevisionReferences(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
+	// subject_runs 的行键即被测资源本身；pinned_runs 的行键是执行 pin 的主体资源。
+	h.enrichRunSummaries(c, tenantID, result.SubjectRuns)
+	h.enrichPinnedRuns(c, tenantID, result.PinnedRuns)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -808,6 +936,7 @@ func (h *EvaluationHandler) RevisionPassRate(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
+	h.enrichRunSummaries(c, tenantID, result.RecentRuns)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -1034,6 +1163,7 @@ func (h *EvaluationHandler) ListMonitorResources(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
+	h.enrichMonitorSummaries(c, tenantID, page.Items)
 	c.JSON(http.StatusOK, page)
 }
 

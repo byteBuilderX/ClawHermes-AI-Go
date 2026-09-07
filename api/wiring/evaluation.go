@@ -56,6 +56,9 @@ type Evaluation struct {
 	// ResourceRollbackExecutor L3 资源回滚执行器（agent/knowledge/skill/canary）。
 	// nil = 无任何可回滚后端（未装配）；Task 4 executeResourceRollback / T13 gate auto 消费。
 	ResourceRollbackExecutor evalport.ResourceRollbackExecutor
+	// ResourceNamer 评测中心资源行被测资源的跨模块真名解析器（仅展示富化：agent/skill
+	// 产品名 + mcp server 名 + knowledge 恒等）。nil 时 handler 富化为空操作。
+	ResourceNamer evalport.CenterResourceNamer
 }
 
 type evaluationResourceRouter struct {
@@ -1336,6 +1339,30 @@ func mapToolObservations(tools []agentdomain.ToolObservation) []evalport.ToolObs
 		})
 	}
 	return mapped
+}
+
+// buildEvaluationCenterResourceNamer 装配评测中心资源行真名解析器（仅展示富化）：
+// agent/skill 由 buildEvaluation 的 guard 保证已装配；mcp 仅在 client manager 就绪
+// 时挂载（nil → mcp 行真名缺席、前端占位，读查询不受影响）。
+func (c *Container) buildEvaluationCenterResourceNamer() evalport.CenterResourceNamer {
+	namer := &centerResourceNamer{agents: c.Agent.Service, skills: c.Skill.VersionService}
+	if c.MCP != nil {
+		namer.mcp = c.MCP.Manager
+	}
+	return namer
+}
+
+// attachEvaluationCenterNamer 是独立 build step（排在 buildEvaluation 之后）：把中心
+// 资源行真名解析器装配进 c.Evaluation。buildEvaluation 行数被质量门禁基线锁定，不再
+// 向函数体增行，故装配独立成 step（同 publish-gate/platform-verify 先例）。guard 兜底
+// Evaluation 组件缺失或 agent/skill 未装配的 fallback 形态（此时 namer 保持 nil，读查询
+// 照常、仅 resource_name 不富化）。
+func (c *Container) attachEvaluationCenterNamer(ctx context.Context) error {
+	if c.Evaluation == nil || c.Agent == nil || c.Agent.Service == nil || c.Skill == nil || c.Skill.VersionService == nil {
+		return nil
+	}
+	c.Evaluation.ResourceNamer = c.buildEvaluationCenterResourceNamer()
+	return nil
 }
 
 func (c *Container) buildEvaluation(ctx context.Context) error {

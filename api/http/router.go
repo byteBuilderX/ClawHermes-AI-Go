@@ -180,7 +180,8 @@ func registerEvaluations(r *gin.Engine, c *wiring.Container, requireActive gin.H
 		c.Logger,
 	).WithBaselineService(c.Evaluation.BaselineService).WithAgentRevisionApplier(c.Evaluation.AgentRevisionApplier).
 		WithTestCaseGenerator(c.Evaluation.TestCaseGenerator).WithObservationService(c.Evaluation.ObservationService).
-		WithReviewService(c.Evaluation.ReviewService).WithDeleteService(c.Evaluation.DeleteService)
+		WithReviewService(c.Evaluation.ReviewService).WithDeleteService(c.Evaluation.DeleteService).
+		WithCenterResourceNamer(c.Evaluation.ResourceNamer)
 	requireAdmin := middleware.RequireTenantRole("admin")
 	evaluations := r.Group("/evaluations", protectedTenantMiddleware(c, middleware.RequireTenantRole("member"))...)
 	{
