@@ -80,7 +80,6 @@ export const buildMenuItems = (user: User | null | undefined): MenuItem[] => {
       icon: <ExperimentOutlined />,
       label: '评测',
       children: [
-        { key: '/evaluations', icon: <ExperimentOutlined />, label: '评测与进化' },
         { key: '/evaluations/runs', icon: <HistoryOutlined />, label: '离线运行' },
         { key: '/evaluations/evolution', icon: <BranchesOutlined />, label: '自进化工作区' },
         { key: '/evaluations/resources', icon: <AppstoreOutlined />, label: '被测资源' },

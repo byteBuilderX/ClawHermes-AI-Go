@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { evaluationRoutes } from './routes';
 
 vi.mock('@/modules/iam', () => ({ PrivateRoute: ({ children }: { children: React.ReactNode }) => children }));
-vi.mock('./pages/EvaluationCenterPage', () => ({ EvaluationCenterPage: () => <div>评测中心路由</div> }));
 vi.mock('./pages/SuiteListPage', () => ({ SuiteListPage: () => <div>评测集列表路由</div> }));
 vi.mock('./pages/SuiteDetailPage', () => ({ SuiteDetailPage: () => <div>评测集详情路由</div> }));
 vi.mock('./pages/RunListPage', () => ({ RunListPage: () => <div>离线运行列表路由</div> }));
@@ -17,7 +16,8 @@ vi.mock('./pages/ObservabilityPage', () => ({ ObservabilityPage: () => <div>在�
 vi.mock('./pages/ReviewPoolPage', () => ({ ReviewPoolPage: () => <div>人工评审池路由</div> }));
 
 const cases: Array<{ entry: string; label: string }> = [
-  { entry: '/evaluations', label: '评测中心路由' },
+  // /evaluations hub 已拆除：裸路径重定向到离线运行页
+  { entry: '/evaluations', label: '离线运行列表路由' },
   { entry: '/evaluations/runs', label: '离线运行列表路由' },
   { entry: '/evaluations/runs/run-1', label: '离线运行详情路由' },
   { entry: '/evaluations/evolution', label: '自进化工作区路由' },

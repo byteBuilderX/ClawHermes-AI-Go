@@ -39,7 +39,9 @@ describe('buildMenuItems', () => {
     expect(screen.queryByText('创建 Agent')).not.toBeInTheDocument();
     expect(screen.queryByText('创建技能')).not.toBeInTheDocument();
     expect(screen.queryByText('添加服务器')).not.toBeInTheDocument();
-    expect(screen.getByText('评测与进化')).toBeInTheDocument();
+    // /evaluations hub（「评测与进化」）已拆除，评测组以离线运行叶子页为首项
+    expect(screen.queryByText('评测与进化')).not.toBeInTheDocument();
+    expect(screen.getByText('离线运行')).toBeInTheDocument();
   });
 
   it('opens the evaluation navigation group', () => {
@@ -195,7 +197,7 @@ describe('buildMenuItems', () => {
       ? group.children.map((child) => (child && 'key' in child ? child.key : ''))
       : []).filter(Boolean);
     expect(keys).toEqual([
-      '/evaluations', '/evaluations/runs', '/evaluations/evolution', '/evaluations/resources',
+      '/evaluations/runs', '/evaluations/evolution', '/evaluations/resources',
       '/evaluations/observability', '/evaluations/review', '/evaluations/suites',
     ]);
   });

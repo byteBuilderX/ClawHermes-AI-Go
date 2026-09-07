@@ -1,5 +1,4 @@
 export { evaluationRoutes } from './routes';
-export { useEvaluationCenter } from './hooks/useEvaluationCenter';
 export { useEvolutionPage } from './hooks/useEvolutionPage';
 export { useResourceDetailPage } from './hooks/useResourceDetailPage';
 export { useResourceListPage } from './hooks/useResourceListPage';
