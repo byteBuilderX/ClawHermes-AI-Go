@@ -89,6 +89,37 @@ func TestPgCenterQueryRepositoryEvidenceTimelinePaginationAndIsolation(t *testin
 	}
 	assertCenterLists(t, ctx, repo, tenants[0], "one")
 	assertCenterLists(t, ctx, repo, tenants[1], "two")
+
+	// (b) revision_id 过滤：同资源 runs 精确取锚定版本行；空值放行全量（新增 $7 谓词
+	// 不改变既有 ListRuns 行为）。Batch 6 资源详情回归视图据此服务端过滤。
+	revNew, err := repo.ListRuns(ctx, tenants[0], port.CenterFilter{ResourceKind: "skill", ResourceID: "shared", RevisionID: "rev-new", Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revNew.Items) != 1 || revNew.Items[0].ID != "collision" {
+		t.Fatalf("revision=rev-new runs=%+v, want exactly run collision", revNew.Items)
+	}
+	revOld, err := repo.ListRuns(ctx, tenants[0], port.CenterFilter{ResourceKind: "skill", ResourceID: "shared", RevisionID: "rev-old", Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revOld.Items) != 1 || revOld.Items[0].ID != "run-old" {
+		t.Fatalf("revision=rev-old runs=%+v, want exactly run run-old", revOld.Items)
+	}
+	missing, err := repo.ListRuns(ctx, tenants[0], port.CenterFilter{ResourceKind: "skill", ResourceID: "shared", RevisionID: "no-such-revision", Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing.Items) != 0 {
+		t.Fatalf("unknown revision matched runs: %+v", missing.Items)
+	}
+	all, err := repo.ListRuns(ctx, tenants[0], port.CenterFilter{ResourceKind: "skill", ResourceID: "shared", Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Items) != 2 {
+		t.Fatalf("unfiltered runs=%+v, want both seeded runs", all.Items)
+	}
 	for _, index := range []string{"idx_optimization_jobs_center_query", "idx_optimization_candidates_job_created"} {
 		var exists bool
 		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname=$1 AND indexname=$2)`,

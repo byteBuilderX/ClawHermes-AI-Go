@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
-import { buildMenuItems, resolveOpenKeys } from '../menu.config';
+import { buildMenuItems, resolveOpenKeys, resolveSelectedKey } from '../menu.config';
 
 const collectLabels = (items: ReturnType<typeof buildMenuItems>): ReactNode[] =>
   items.flatMap((item) => {
@@ -183,5 +183,37 @@ describe('buildMenuItems', () => {
     expect(items.some((item) => item && 'key' in item && item.key === '/history')).toBe(false);
     expect(resolveOpenKeys('/history')).toEqual([]);
     expect(resolveOpenKeys('/agents')).toEqual(['agent-group']);
+  });
+
+  it('lists the evaluation leaf pages as menu children for direct navigation', () => {
+    const items = buildMenuItems({
+      sub: 'admin-1', tenant_id: 'tenant-1', role: 'admin', avatar_url: '', github_login: 'admin', username: '',
+      current_tenant: { id: 'tenant-1', name: 'Test', role: 'admin' },
+    });
+    const group = items.find((item) => item && 'key' in item && item.key === 'evaluation-group');
+    const keys = (group && 'children' in group && Array.isArray(group.children)
+      ? group.children.map((child) => (child && 'key' in child ? child.key : ''))
+      : []).filter(Boolean);
+    expect(keys).toEqual([
+      '/evaluations', '/evaluations/runs', '/evaluations/evolution', '/evaluations/resources',
+      '/evaluations/observability', '/evaluations/review', '/evaluations/suites',
+    ]);
+  });
+
+  describe('resolveSelectedKey', () => {
+    it('keeps leaf routes untouched', () => {
+      expect(resolveSelectedKey('/evaluations')).toBe('/evaluations');
+      expect(resolveSelectedKey('/evaluations/evolution')).toBe('/evaluations/evolution');
+    });
+
+    it('collapses detail routes onto their owning list menu', () => {
+      expect(resolveSelectedKey('/evaluations/runs/run-1')).toBe('/evaluations/runs');
+      expect(resolveSelectedKey('/evaluations/resources/skill/skill-1')).toBe('/evaluations/resources');
+      expect(resolveSelectedKey('/evaluations/suites/suite-1')).toBe('/evaluations/suites');
+    });
+
+    it('leaves other modules unchanged', () => {
+      expect(resolveSelectedKey('/agents/agent-1/edit')).toBe('/agents/agent-1/edit');
+    });
   });
 });

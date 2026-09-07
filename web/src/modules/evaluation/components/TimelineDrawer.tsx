@@ -1,14 +1,15 @@
-import { Alert, Drawer, Empty, Timeline, Typography } from 'antd';
+import { Drawer } from 'antd';
 
 import type { TimelineEvent } from '../model/evaluation';
 
-import { drawerWidth, StatusTag } from './evaluationView';
+import { TimelinePanel } from './TimelinePanel';
+import { drawerWidth } from './evaluationView';
 
+// 资源时间线的抽屉壳：内容统一委托 TimelinePanel（资源详情页直接内嵌该面板）。
 export const TimelineDrawer = ({ events, open, onClose, loading, error, isMobile }: {
   events: TimelineEvent[]; open: boolean; onClose: () => void; loading?: boolean; error?: string; isMobile?: boolean;
-}) => <Drawer title="资源时间线" open={open} onClose={onClose} width={drawerWidth(isMobile)} loading={loading} destroyOnHidden>
-  {error ? <Alert type="error" showIcon message={error} /> : events.length ? <Timeline className="evaluation-timeline-rail" items={events.map((event) => ({
-    children: <><Typography.Text strong>{event.summary}</Typography.Text><br /><StatusTag value={event.status} />
-      <Typography.Text type="secondary"> {new Date(event.created_at).toLocaleString('zh-CN')}</Typography.Text></>,
-  }))} /> : <Empty description="时间线还是空的" />}
-</Drawer>;
+}) => (
+  <Drawer title="资源时间线" open={open} onClose={onClose} width={drawerWidth(isMobile)} destroyOnHidden>
+    <TimelinePanel events={events} loading={loading} error={error} />
+  </Drawer>
+);

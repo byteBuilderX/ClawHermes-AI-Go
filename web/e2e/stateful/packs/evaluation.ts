@@ -26,15 +26,21 @@ const rows = async <R extends QueryResultRow>(pool: DatabasePool, tenantID: stri
 const mutate = async (pool: DatabasePool, tenantID: string, text: string, values: unknown[]) => (
   await withTenantMutation(pool, tenantID, { text, values })
 );
-const openEvolution = async (page: Page) => {
-  // 命令（reject/promote/rollback/pause）后列表异步 reload：candidates 短暂清空
-  // → drawer 瞬关再重开。先等 reload 稳定、再关闭残留遮罩，避免拦截候选版本 tab。
+const openEvolution = async (page: Page, url: string) => {
+  // 命令（reject/promote/rollback/pause）后列表异步 reload：先等 reload 稳定、
+  // 再关闭残留遮罩，避免后续点击被拦截。自进化工作区独立成页（Batch 3+），
+  // 候选/金丝雀操作全部落到 /evaluations/evolution 页面（默认候选版本 tab）。
+  await page.goto(url);
+  await expect(page.getByRole('heading', { name: '自进化工作区' })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('.ant-spin-spinning')).toHaveCount(0, { timeout: 15_000 });
   await closeDrawerIfOpen(page);
-  await page.getByRole('tab', { name: /候选版本/ }).click();
-  await page.getByRole('button', { name: '进化操作' }).click();
+  await page.getByRole('button', { name: /进化操作/ }).click();
   return page.getByRole('dialog', { name: '进化操作' });
 };
+// EvolutionPage 自身是 Tabs（候选版本/金丝雀实验），隐藏 pane 仍在 DOM（display:none）；
+// 一律在活动 pane 内取行，避免 Playwright strict 命中隐藏重复行。
+const activeTableRow = (page: Page, text: string) =>
+  page.locator('.ant-tabs-tabpane-active .ant-table-row').filter({ hasText: text }).first();
 const closeDrawerIfOpen = async (page: Page) => {
   // 单次 count 判断会漏在 drawer 瞬关窗口上，残留 mask 拦截后续点击
   // （soak 实测 45s 仍被 ant-drawer-mask 拦截、候选版本 tab 点击超时）。
@@ -311,7 +317,7 @@ export const executeEvaluationPack = async ({
     evidence.http.push('Suite list/detail GET, draft case POST/DELETE, and legacy draft POST returned successful browser-observed responses');
     evidence.database.push('Suite draft revision and eval_cases reconciled after add, delete, and legacy start');
 
-    let dialog = await openEvolution(page);
+    let dialog = await openEvolution(page, `${webURL}/evaluations/evolution`);
     let panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
     await page.locator('.ant-select-item-option-content').filter({ hasText: 'Agent' }).click();
@@ -327,11 +333,13 @@ export const executeEvaluationPack = async ({
     expect(optimized.status()).toBe(201);
     const candidates = (await optimized.json() as { candidates: Array<{ id: string; revision: { revision_id: string } }> }).candidates;
     expect(candidates).toHaveLength(2);
+    // EvolutionPage 候选表不展示候选 id，行定位改用唯一可显示的候选 revision。
+    const evaluateRevision = candidates[1].revision.revision_id;
+    const rejectRevision = candidates[0].revision.revision_id;
     await expect(dialog).toBeHidden();
 
-    await page.getByRole('tab', { name: /候选版本/ }).click();
-    const evaluatedRow = page.getByRole('row').filter({ hasText: candidates[1].id });
-    await evaluatedRow.getByRole('button', { name: /详\s*情/ }).click();
+    await expect(activeTableRow(page, evaluateRevision)).toHaveCount(1, { timeout: 15_000 });
+    await activeTableRow(page, evaluateRevision).getByRole('button', { name: /详\s*情/ }).click();
     const candidateDrawer = page.locator('.ant-drawer:visible');
     await candidateDrawer.getByRole('button', { name: '运行离线评测' }).click();
     const evaluationDialog = page.getByRole('dialog', { name: '运行候选离线评测' });
@@ -343,14 +351,14 @@ export const executeEvaluationPack = async ({
     await expect(evaluationDialog).toBeHidden();
     await expect.poll(async () => (await rows<{ status: string; passed: boolean }>(pool, tenantID, `
       SELECT status,passed FROM eval_runs WHERE resource_id=$1 AND revision_id=$2 AND suite_revision_id=$3
-      ORDER BY created_at DESC LIMIT 1`, [agentID, candidates[1].revision.revision_id, suiteRevisionID]))[0],
+      ORDER BY created_at DESC LIMIT 1`, [agentID, evaluateRevision, suiteRevisionID]))[0],
     { timeout: 120_000 }).toEqual({ status: 'succeeded', passed: true });
     await closeDrawerIfOpen(page);
     await page.reload();
-    await page.getByRole('tab', { name: /候选版本/ }).click();
+    await expect(page.getByRole('heading', { name: '自进化工作区' })).toBeVisible({ timeout: 15_000 });
 
-    const rejectedRow = page.getByRole('row').filter({ hasText: candidates[0].id });
-    await rejectedRow.getByRole('button', { name: /详\s*情/ }).click();
+    await expect(activeTableRow(page, rejectRevision)).toHaveCount(1, { timeout: 15_000 });
+    await activeTableRow(page, rejectRevision).getByRole('button', { name: /详\s*情/ }).click();
     const rejectResponse = waitFor(page, `/evaluations/candidates/${candidates[0].id}/reject`, 'POST');
     await page.getByRole('button', { name: '拒绝候选' }).click();
     const rejectDialog = page.getByRole('dialog', { name: '确认拒绝此候选版本？' });
@@ -359,7 +367,7 @@ export const executeEvaluationPack = async ({
     await expect(rejectDialog).toBeHidden();
     await closeDrawerIfOpen(page);
 
-    dialog = await openEvolution(page);
+    dialog = await openEvolution(page, `${webURL}/evaluations/evolution`);
     await dialog.getByRole('tab', { name: '创建金丝雀' }).click();
     panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
@@ -383,7 +391,7 @@ export const executeEvaluationPack = async ({
       resource_kind: 'agent', resource_id: agentID, revision_id: agentStableRevisionID,
     } });
     expect(evidenceRegistration.status()).toBe(204);
-    dialog = await openEvolution(page);
+    dialog = await openEvolution(page, `${webURL}/evaluations/evolution`);
     await dialog.getByRole('tab', { name: '记录反馈' }).click();
     panel = dialog.locator('.ant-tabs-tabpane-active');
     await panel.getByRole('combobox', { name: '资源类型' }).click();
@@ -400,7 +408,10 @@ export const executeEvaluationPack = async ({
     await expect(dialog).toBeHidden();
 
     await page.getByRole('tab', { name: /金丝雀实验/ }).click();
-    await page.getByRole('row').filter({ hasText: experimentID }).getByRole('button', { name: /详\s*情/ }).click();
+    // EvolutionPage 实验表只展示 canary_revision_id 等版本列，不展示实验 id；用金丝雀
+    // revision（=evaluateRevision）定位刚创建、stage=5 running 的那一行。
+    await expect(activeTableRow(page, evaluateRevision)).toHaveCount(1, { timeout: 15_000 });
+    await activeTableRow(page, evaluateRevision).getByRole('button', { name: /详\s*情/ }).click();
     const experimentDrawer = page.locator('.ant-drawer:visible');
     await expect(experimentDrawer).toBeVisible();
     const pauseResponse = waitFor(page, `/evaluations/experiments/${experimentID}/pause`, 'POST');
@@ -419,7 +430,9 @@ export const executeEvaluationPack = async ({
     await page.reload();
     for (const fixture of fixtures) {
       await page.getByRole('tab', { name: /金丝雀实验/ }).click();
-      await page.getByRole('row').filter({ hasText: fixture.experiment }).getByRole('button', { name: /详\s*情/ }).click();
+      // 与暂停块同理：实验表不显示实验 id，按各夹具唯一的 canary revision 定位行。
+      await expect(activeTableRow(page, fixture.canary)).toHaveCount(1, { timeout: 15_000 });
+      await activeTableRow(page, fixture.canary).getByRole('button', { name: /详\s*情/ }).click();
       const decisionDrawer = page.locator('.ant-drawer:visible');
       await expect(decisionDrawer).toBeVisible();
       const commandResponse = waitFor(page,
@@ -458,13 +471,16 @@ export const executeEvaluationPack = async ({
       JSON.stringify({ signals: { judge: [{ dimension: 'faithfulness', score: 0.6, confidence: 0.3 }] },
         verdict: 'pass', stratum: 'evaluation', cost_usd: 0.0 })]);
     const reviewListResponse = waitFor(page, '/evaluations/review', 'GET');
-    await page.getByRole('tab', { name: /人工评审池/ }).click();
+    // 人工评审池独立成页（Batch 3）：直接导航到 ReviewPoolPage，首屏 GET 即评审列表。
+    await page.goto(`${webURL}/evaluations/review`);
+    await expect(page.getByRole('heading', { name: '人工评审池' })).toBeVisible({ timeout: 15_000 });
     const reviewList = await reviewListResponse;
     expect(reviewList.status()).toBe(200);
     const reviewListBody = await reviewList.json() as { items: Array<{ id: string }>; total: number };
     expect(reviewListBody.items.some((item) => item.id === reviewID)).toBe(true);
     expect(reviewListBody.total).toBeGreaterThanOrEqual(1);
-    const reviewRow = page.locator('.ant-tabs-tabpane-active .ant-table-row').filter({ hasText: agentID });
+    // ReviewPoolPage 无 Tabs 包裹，直接用页面级表格行。
+    const reviewRow = page.locator('.ant-table-row').filter({ hasText: agentID });
     await expect(reviewRow).toHaveCount(1, { timeout: 15_000 });
 
     // 详情 Drawer 仅展示行数据不发请求，端点用页面 fetch 直接覆盖（带 JWT，走真实浏览器）。

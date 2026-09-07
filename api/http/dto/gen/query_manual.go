@@ -6,6 +6,7 @@ type EvaluationCenterQuery struct {
 	// handler.centerFilter 统一校验（逐 token 走 domain.ResourceKind.Validate）。
 	ResourceKind string `form:"resource_kind" binding:"omitempty"`
 	ResourceID   string `form:"resource_id"`
+	RevisionID   string `form:"revision_id"`
 	Status       string `form:"status"`
 	Cursor       string `form:"cursor"`
 	Limit        int    `form:"limit" binding:"omitempty,min=1,max=100"`

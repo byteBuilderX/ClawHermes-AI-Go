@@ -13,8 +13,8 @@ var ErrRevisionCommitUnknown = errors.New("revision metadata commit outcome unkn
 var ErrCenterResourceNotFound = errors.New("evaluation center resource not found")
 
 type CenterFilter struct {
-	ResourceKind, ResourceID, Status, Cursor string
-	Limit                                    int
+	ResourceKind, ResourceID, RevisionID, Status, Cursor string
+	Limit                                                int
 }
 
 // MonitorFilter 评测监控聚合查询过滤（窗口必填由 application 兜底近 7 天）。

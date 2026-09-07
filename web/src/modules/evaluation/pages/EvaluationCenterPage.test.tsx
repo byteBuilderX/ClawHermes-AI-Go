@@ -2,10 +2,19 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SuiteSummary } from '../model/evaluation';
+import type { CandidateSummary, ExperimentSummary, RunSummary, SuiteSummary } from '../model/evaluation';
 
 import { EvaluationCenterPage } from './EvaluationCenterPage';
 
+const runFixture: RunSummary = {
+  id: 'run-1', resource_id: 'agent-1', revision_id: 'agent-v1', status: 'succeeded', resource_kind: 'agent',
+  passed: true, total_cases: 4, passed_cases: 4, created_at: '2026-07-23T00:00:00Z',
+};
+const candidateFixture: CandidateSummary = {
+  id: 'cand-1', resource_id: 'agent-1', revision_id: 'canary-1', parent_revision_id: 'agent-v1', source: 'optimize',
+  status: 'proposed', resource_kind: 'agent', state_version: 1,
+  safe_diff: { changed_fields: [], changes: {}, parent_missing: false }, created_at: '2026-07-23T00:00:00Z',
+};
 const center = vi.hoisted(() => ({
   overview: { resources: 1, suites: 2, runs: 3, candidates: 1, experiments: 1 },
   resources: { items: [
@@ -18,12 +27,8 @@ const center = vi.hoisted(() => ({
     { id: 'r4', resource_id: 'knowledge-1', resource_kind: 'knowledge', status: 'active', stable_revision_id: 'knowledge-v1',
       safe_summary: { name: '产品知识库' }, created_at: '2026-07-23T00:00:00Z' },
   ] },
-  suites: { items: [] as SuiteSummary[] }, runs: { items: [] }, candidates: { items: [] }, experiments: { items: [{
-    id: 'experiment-1', resource_id: 'agent-1', stable_revision_id: 'stable-1', canary_revision_id: 'canary-1',
-    status: 'running', recommendation: 'promote', resource_kind: 'agent', stage_percent: 100, safety_stopped: false,
-    state_version: 2, promotion_evidence: { eligible: true, gates: { quality: 'passed', cost: 'passed',
-      latency: 'passed', error_rate: 'passed', security: 'passed' }, blockers: [] }, created_at: '2026-07-23T00:00:00Z',
-  }] },
+  suites: { items: [] as SuiteSummary[] },
+  runs: { items: [] as RunSummary[] }, candidates: { items: [] as CandidateSummary[] }, experiments: { items: [] as ExperimentSummary[] },
   loading: false, error: '', canManageEvaluation: true, reload: vi.fn(), rejectCandidate: vi.fn(),
   pauseExperiment: vi.fn(), promoteExperiment: vi.fn(), rollbackExperiment: vi.fn(), createEvaluation: vi.fn(),
   canDeleteEntity: vi.fn(() => true), deleteSuite: vi.fn(), deleteRun: vi.fn(), deleteJob: vi.fn(),
@@ -31,14 +36,6 @@ const center = vi.hoisted(() => ({
 }));
 const useCenter = vi.hoisted(() => vi.fn(() => center));
 vi.mock('../hooks/useEvaluationCenter', () => ({ useEvaluationCenter: useCenter }));
-// 人工评审池 Tab 挂载后会在后台拉取评审池，页面测试只需关心中心记录簿，
-// 用空响应 mock 掉 review service，避免真实 axios 请求与异步状态更新。
-vi.mock('../services/review', () => ({
-  listReviewItems: vi.fn().mockResolvedValue({ items: [], total: 0 }),
-  getReviewItem: vi.fn(),
-  decideReviewItem: vi.fn(),
-  deleteReviewItem: vi.fn(),
-}));
 // 组件创建/操作后调用 message.success/error,antd 的 rc-notification 定时器
 // (duration 2-3s)会在测试 teardown 后触发 setState → "window is not defined",
 // 造成 vitest 计 1 error 的偶发失败。mock 掉 message,避免真实 notification 定时器。
@@ -47,13 +44,6 @@ vi.mock('antd', async () => ({
   ...(await vi.importActual<typeof import('antd')>('antd')),
   message: { success: messageMocks.success, error: messageMocks.error },
 }));
-// 监控 Tab 挂载后按默认窗拉资源观测汇总；spread actual 保留 evaluationApi
-// 其余真实方法（页面其它路径引用），只替换本页测试关心的 listMonitorResources。
-const monitorApi = vi.hoisted(() => ({ listMonitorResources: vi.fn() }));
-vi.mock('../api/evaluation.api', async () => {
-  const actual = await vi.importActual<typeof import('../api/evaluation.api')>('../api/evaluation.api');
-  return { ...actual, evaluationApi: { ...actual.evaluationApi, listMonitorResources: monitorApi.listMonitorResources } };
-});
 // RegisterResourceModal 打开时会拉取可登记对象：agent=agentApi.list()（/agents），
 // knowledge=knowledgeApi.list()（/knowledge/workspaces）。登记流程的候选数据由组件自身
 // 单测覆盖；本页测试只需空响应，避免打开登记框触发真实 axios。spread actual 保留模块
@@ -69,13 +59,6 @@ vi.mock('@/modules/knowledge/api/knowledge.api', async () => {
   return { ...actual, knowledgeApi: { ...actual.knowledgeApi, list: knowledgeList } };
 });
 
-const emptyMonitorWindow = { items: [], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } };
-
-const suiteFixture: SuiteSummary = {
-  id: 'suite-1', name: '投诉分类基线', description: '技能检索基线', status: 'published', resource_kind: 'skill',
-  active_version_no: 2, active_case_count: 5, created_by: 'admin', created_at: '2026-07-23T00:00:00Z',
-};
-
 const LocationProbe = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -88,40 +71,84 @@ const LocationProbe = () => {
 
 const renderPage = (entry = '/evaluations') => {
   render(
-    <MemoryRouter
-      initialEntries={[entry]}
-    >
+    <MemoryRouter initialEntries={[entry]}>
       <EvaluationCenterPage />
       <LocationProbe />
     </MemoryRouter>,
   );
 };
+const path = () => screen.getByRole('status', { name: '当前路径' });
+const query = () => screen.getByRole('status', { name: '当前查询参数' });
 
 describe('EvaluationCenterPage', () => {
   beforeEach(() => {
     center.canManageEvaluation = true;
     center.suites.items = [];
+    center.runs.items = [];
+    center.candidates.items = [];
+    center.experiments.items = [];
     useCenter.mockClear();
   });
 
-  it('exposes the primary first-viewport controls and the register entry for admins', () => {
+  it('exposes filters, the register entry and the record-book headings for admins', () => {
     renderPage();
     expect(screen.getByRole('combobox', { name: '资源类型' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '资源状态' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /新建评测/ })).toBeInTheDocument();
     // 被测收敛后统一建档入口落在评测中心（skill 工作台入口已移除）。
     expect(screen.getByRole('button', { name: '登记被测资源' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '刷新' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
   });
 
-  it('keeps new evaluation and the register entry hidden for members while details remain available', () => {
+  it('keeps new evaluation and the register entry hidden for members while quick links remain', () => {
     center.canManageEvaluation = false;
     renderPage();
     expect(screen.queryByRole('button', { name: /新建评测/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '登记被测资源' })).not.toBeInTheDocument();
+    // 只读成员同样能经由记录簿直达各链路页。
+    expect(screen.getByRole('button', { name: '离线运行' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '人工评审池' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '查看 skill-1' })).toBeInTheDocument();
+  });
+
+  it('navigates to the resource detail page when a summary row is opened', () => {
+    renderPage();
     fireEvent.click(screen.getByRole('button', { name: '查看 skill-1' }));
-    expect(screen.getByText('观测事实')).toBeInTheDocument();
+    expect(path()).toHaveTextContent('/evaluations/resources/skill/skill-1');
+  });
+
+  it('navigates each quick link to its dedicated page', () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('button', { name: '离线运行' }));
+    expect(path()).toHaveTextContent('/evaluations/runs');
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    fireEvent.click(screen.getByRole('button', { name: '自进化工作区' }));
+    expect(path()).toHaveTextContent('/evaluations/evolution');
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    fireEvent.click(screen.getByRole('button', { name: '在线观测' }));
+    expect(path()).toHaveTextContent('/evaluations/observability');
+  });
+
+  it('routes suite management through the dedicated suites page (hub keeps a read-only entry)', () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('button', { name: '评测集' }));
+    expect(path()).toHaveTextContent('/evaluations/suites');
+  });
+
+  it('navigates a run feed entry to the run detail page and candidate entries to the evolution page', () => {
+    center.runs.items = [runFixture];
+    center.candidates.items = [candidateFixture];
+    renderPage();
+    expect(screen.getByText(/run-1/)).toBeInTheDocument();
+    expect(screen.getByText(/canary-1/)).toBeInTheDocument();
+    // 首行记录为 run（相同时间戳下运行先于候选入并），其「查看」直达运行详情。
+    fireEvent.click(screen.getAllByRole('button', { name: '查看' })[0]);
+    expect(path()).toHaveTextContent('/evaluations/runs/run-1');
+  });
+
+  it('shows the feed empty state when there are no records yet', () => {
+    renderPage();
+    expect(screen.getByText('还没有评测活动记录')).toBeInTheDocument();
   });
 
   it('creates an inline suite under create mode and forwards the plan to the center hook', async () => {
@@ -175,37 +202,6 @@ describe('EvaluationCenterPage', () => {
     })));
   });
 
-  it('directs suite management from the suites tab to the dedicated list page for admins', () => {
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '套件 0' }));
-    expect(screen.getByRole('button', { name: /管理评测集/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /管理评测集/ }));
-    expect(screen.getByRole('status', { name: '当前路径' })).toHaveTextContent('/evaluations/suites');
-  });
-
-  it('hides suite management for members while the read-only hint remains', () => {
-    center.canManageEvaluation = false;
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '套件 0' }));
-    expect(screen.queryByRole('button', { name: /管理评测集/ })).not.toBeInTheDocument();
-    expect(screen.getByText('套件还是空的（仅管理员可管理）')).toBeInTheDocument();
-  });
-
-  it('navigates to the suite detail route when a row is opened from the suites tab', () => {
-    center.suites.items = [suiteFixture];
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '套件 1' }));
-    fireEvent.click(screen.getByRole('button', { name: '打开' }));
-    expect(screen.getByRole('status', { name: '当前路径' })).toHaveTextContent('/evaluations/suites/suite-1');
-  });
-
-  it('enables promotion from the real eligible experiment summary shape', () => {
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '金丝雀实验 1' }));
-    fireEvent.click(screen.getByRole('button', { name: '详情' }));
-    expect(screen.getByRole('button', { name: /晋\s*级/ })).toBeEnabled();
-  });
-
   it('initializes the center from a valid resource deep link', () => {
     renderPage('/evaluations?kind=skill&resource_id=skill-1');
     expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: 'skill', resource_id: 'skill-1', status: undefined });
@@ -231,31 +227,13 @@ describe('EvaluationCenterPage', () => {
       return item!;
     });
     fireEvent.click(option);
-    await waitFor(() => expect(screen.getByRole('status', { name: '当前查询参数' }))
-      .toHaveTextContent('?kind=agent&resource_id=skill-1&view=evidence'));
+    await waitFor(() => expect(query()).toHaveTextContent('?kind=agent&resource_id=skill-1&view=evidence'));
     expect(useCenter).toHaveBeenLastCalledWith({ resource_kind: 'agent', resource_id: 'skill-1', status: undefined });
 
     fireEvent.click(screen.getByRole('button', { name: '返回' }));
     await waitFor(() => expect(useCenter).toHaveBeenLastCalledWith({
       resource_kind: 'skill', resource_id: 'skill-1', status: undefined,
     }));
-  });
-
-  it('places the monitoring tab after health and before the review pool', () => {
-    renderPage();
-    const names = screen.getAllByRole('tab').map((node) => node.textContent ?? '');
-    expect(names.indexOf('监控')).toBeGreaterThan(names.indexOf('运行通过率趋势'));
-    expect(names.indexOf('监控')).toBeLessThan(names.indexOf('人工评审池'));
-  });
-
-  it('mounts the monitoring panel with kind and resource filters from the deep link', async () => {
-    monitorApi.listMonitorResources.mockResolvedValue(emptyMonitorWindow);
-    renderPage('/evaluations?kind=skill&resource_id=skill-1');
-    fireEvent.click(screen.getByRole('tab', { name: '监控' }));
-    expect(await screen.findByTestId('evaluation-monitor-panel')).toBeInTheDocument();
-    await waitFor(() => expect(monitorApi.listMonitorResources).toHaveBeenCalledWith(expect.objectContaining({
-      resource_kind: 'skill', resource_id: 'skill-1',
-    })));
   });
 
   it('opens the register modal from the toolbar with agent as the default kind', async () => {
@@ -278,7 +256,6 @@ describe('EvaluationCenterPage', () => {
     expect(within(dialog).getByText('kb-1')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '登记并新建评测' })).toBeInTheDocument();
     // action/kind/resource_id 一次性消费，避免刷新反复弹窗。
-    await waitFor(() => expect(screen.getByRole('status', { name: '当前查询参数' }))
-      .not.toHaveTextContent('action=register'));
+    await waitFor(() => expect(query()).not.toHaveTextContent('action=register'));
   });
 });
