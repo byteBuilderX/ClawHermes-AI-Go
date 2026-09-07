@@ -12,6 +12,10 @@ interface EvaluationPackContext { actor: BrowserActor; pool: DatabasePool; evide
 const waitFor = async (page: Page, path: string | RegExp, method: string) => {
   try {
     return await page.waitForResponse((response) => {
+      // 本 helper 只捕获 API XHR/fetch JSON 响应。SPA 导航的 document 请求（page.goto
+      // 到与 API 同路径的路由，如 /evaluations/review）pathname 相同、会先命中并返回
+      // HTML，导致后续 .json() 解析 <!DOCTYPE> 崩溃——先按 resourceType 排除 document。
+      if (response.request().resourceType() === 'document') return false;
       const pathname = new URL(response.url()).pathname;
       return (typeof path === 'string' ? pathname === path : path.test(pathname))
         && response.request().method() === method;
@@ -189,10 +193,13 @@ export const executeEvaluationPack = async ({
     await expect(page.getByRole('button', { name: '登记该资源' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: '登记该资源' }).click();
     const registerDialog = page.getByRole('dialog', { name: '登记被测资源' });
-    // 详情页登记框由 URL 预填 kind+resource_id；仍按唯一名在资源下拉搜索确认建档对象
-    // （资源下拉加载线上 agent：GET /agents）。
+    // 详情页登记框由 URL 预填 kind+resource_id（被测资源 select 已有选中值）。antd 单选的
+    // 已选项以 .ant-select-selection-item 覆盖 search input——空态式 combobox.click() 会被
+    // 该项拦截 pointer events。真实用户点击的是 .ant-select-selector（点击后打开下拉并使
+    // search input 可输入）；照此仍按唯一名搜索确认建档对象（资源下拉加载线上 agent：GET
+    // /agents）。
     const resourceCombobox = registerDialog.getByRole('combobox', { name: '被测资源' });
-    await resourceCombobox.click();
+    await resourceCombobox.locator('xpath=ancestor::div[contains(@class,"ant-select-selector")]').click();
     await resourceCombobox.fill(agentName);
     await page.locator('.ant-select-item-option-content').filter({ hasText: agentName }).click();
     const baselineResponse = waitFor(page, /\/evaluations\/resources\/[^/]+\/[^/]+\/baseline$/, 'POST');
@@ -475,6 +482,12 @@ export const executeEvaluationPack = async ({
       expect(deployment.canary_revision_id).toBeNull();
       await closeDrawerIfOpen(page);
       await page.reload();
+      // 每次命令后的 reload 都等到页面页头（AuthProvider 经 /auth/refresh 恢复会话并
+      // setUser）后再进下一次全文档导航。末次 reload 若不等会话落定就 goto 评审深链，
+      // 新文档的 restoreSession 会用已被前次 refresh 轮换掉（单次消费）的旧 refresh
+      // cookie → 401 "refresh token revoked" → PrivateRoute 跳 /login（真实用户快速
+      // F5+书签深链才会偶发；评审池功能本身无回归，见决策循环后多次实测转绿）。
+      await expect(page.getByRole('heading', { name: '自进化工作区' })).toBeVisible({ timeout: 15_000 });
     }
 
     // ── P1c 人工评审池：列表 / 详情 / 决策 3 端点 ─────────────────────────────
@@ -490,6 +503,10 @@ export const executeEvaluationPack = async ({
     const reviewListResponse = waitFor(page, '/evaluations/review', 'GET');
     // 人工评审池独立成页（Batch 3）：直接导航到 ReviewPoolPage，首屏 GET 即评审列表。
     await page.goto(`${webURL}/evaluations/review`);
+    // Vite dev 全量导航后 React 挂载 + AuthProvider 经 /auth/refresh、/auth/me 恢复会话是
+    // 异步链，headless 实测偶发在 goto 落定后仍持续 >15s 才渲染页头（时序抖动，非功能回归）。
+    // 先等网络静默（Auth bootstrap + 首屏列表请求落定）再断言页头，避免断言在挂载窗口外空转。
+    await page.waitForLoadState('networkidle').catch(() => {});
     await expect(page.getByRole('heading', { name: '人工评审池' })).toBeVisible({ timeout: 15_000 });
     const reviewList = await reviewListResponse;
     expect(reviewList.status()).toBe(200);
