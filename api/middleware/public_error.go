@@ -15,6 +15,10 @@ const (
 	CodeSystemPromptNotConfigured = "SYSTEM_PROMPT_NOT_CONFIGURED"
 	// CodeCompactionPromptNotConfigured 平台压缩提示词 fail-closed 未配置。
 	CodeCompactionPromptNotConfigured = "COMPACTION_PROMPT_NOT_CONFIGURED"
+	// CodeAgentSystemPromptRequired 被测/发布 agent 自身未配置 system_prompt，
+	// AgentRevision 领域校验拒绝建档（422）。区别于平台全局 SYSTEM_PROMPT_NOT_CONFIGURED
+	// （503 平台参数缺失）——此为该 agent 配置缺失，用户补全后重试即可。
+	CodeAgentSystemPromptRequired = "AGENT_SYSTEM_PROMPT_REQUIRED"
 )
 
 type PublicErrorDescriptor struct {
@@ -41,6 +45,15 @@ func DescribePublicError(err error, status int) PublicErrorDescriptor {
 		return PublicErrorDescriptor{
 			Message: "平台未配置对话历史压缩提示词（agent.compaction_prompt），请联系平台管理员在参数配置中补全后重试",
 			Code:    CodeCompactionPromptNotConfigured,
+		}
+	}
+	// 被测/发布 agent 自身缺 system_prompt：建档（评测登记）对该被测对象快照做领域校验
+	// 失败。这是可被用户修正的资源状态问题（非 5xx 服务故障），固定中文引导先配置被测
+	// agent 的系统提示词再重试。
+	if errors.Is(err, agentdomain.ErrAgentSystemPromptRequired) {
+		return PublicErrorDescriptor{
+			Message: "该被测 Agent 尚未配置系统提示词，无法建档。请先在 Agent 配置中填写系统提示词后再登记",
+			Code:    CodeAgentSystemPromptRequired,
 		}
 	}
 	// ErrUpstreamRequestFailed 的 wrap 链含内部 BaseURL/上游响应细节，

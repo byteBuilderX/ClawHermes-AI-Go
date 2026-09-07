@@ -69,7 +69,7 @@ func (r AgentRevision) Validate() error {
 		return errors.New("agent revision: agent id required")
 	}
 	if strings.TrimSpace(r.SystemPrompt) == "" {
-		return errors.New("agent revision: system prompt required")
+		return ErrAgentSystemPromptRequired
 	}
 	if strings.TrimSpace(r.Model) == "" {
 		return errors.New("agent revision: model required")

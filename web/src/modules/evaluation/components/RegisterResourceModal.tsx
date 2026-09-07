@@ -9,6 +9,7 @@ import { displayLabel } from './evaluationView';
 
 import { agentApi } from '@/modules/agent/api/agent.api';
 import { knowledgeApi } from '@/modules/knowledge/api/knowledge.api';
+import { extractErrorMessage } from '@/shared/lib/errorMessage';
 
 type Kind = RegistrableResourceKind;
 
@@ -91,7 +92,9 @@ export const RegisterResourceModal = ({
       message.success({ content: '资源已登记稳定版本', duration: 2 });
       after(values.kind, values.resource_id);
     } catch (error) {
-      message.error({ content: error instanceof Error ? error.message : '登记失败', duration: 3 });
+      // 建档失败（如被测 Agent 缺 system_prompt 返回 422）要展示后端 `.error` 中文，
+      // 而非 axios 的 "Request failed with status code xxx"。
+      message.error({ content: extractErrorMessage(error, '登记失败'), duration: 3 });
     } finally {
       setSubmitting(false);
     }
