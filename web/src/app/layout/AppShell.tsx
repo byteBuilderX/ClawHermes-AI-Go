@@ -31,7 +31,7 @@ import {
 import { useNavigate, useLocation } from 'react-router-dom';
 
 import { UserMenu } from './UserMenu';
-import { buildMenuItems, resolveOpenKeys } from './menu.config';
+import { buildMenuItems, resolveOpenKeys, resolveSelectedKey } from './menu.config';
 
 import { ApprovalNotificationBell } from '@/modules/approvals';
 import { useAuth, authApi } from '@/modules/iam';
@@ -108,7 +108,7 @@ const NavigationContent = memo(
         <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
           <Menu
             theme="dark"
-            selectedKeys={[pathname]}
+            selectedKeys={[resolveSelectedKey(pathname)]}
             defaultOpenKeys={openKeys}
             mode="inline"
             items={menuItems}

@@ -177,7 +177,7 @@ func (r *PgCenterQueryRepository) ListRuns(ctx context.Context, tenantID string,
 		return page, e
 	}
 	e = r.tenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT id,resource_kind,resource_id,revision_id,status,passed,total_cases,passed_cases,created_by,created_at FROM eval_runs WHERE ($1='' OR resource_kind = ANY(string_to_array($1, ','))) AND ($2='' OR resource_id=$2) AND ($3='' OR status=$3) AND ($4::timestamptz IS NULL OR (created_at,id)<($4,$5)) ORDER BY created_at DESC,id DESC LIMIT $6`, filter.ResourceKind, filter.ResourceID, filter.Status, ct, cid, filter.Limit+1)
+		rows, e := tx.Query(ctx, `SELECT id,resource_kind,resource_id,revision_id,status,passed,total_cases,passed_cases,created_by,created_at FROM eval_runs WHERE ($1='' OR resource_kind = ANY(string_to_array($1, ','))) AND ($2='' OR resource_id=$2) AND ($3='' OR status=$3) AND ($4::timestamptz IS NULL OR (created_at,id)<($4,$5)) AND ($7='' OR revision_id=$7) ORDER BY created_at DESC,id DESC LIMIT $6`, filter.ResourceKind, filter.ResourceID, filter.Status, ct, cid, filter.Limit+1, filter.RevisionID)
 		if e != nil {
 			return e
 		}

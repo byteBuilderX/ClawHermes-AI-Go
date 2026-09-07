@@ -185,6 +185,8 @@ registerLLMAdmin(r, c, requireActive)
 | POST | `/evaluations/experiments/:id/rollback` | RollbackExperiment | requireActive |
 | POST | `/evaluations/feedback` | RecordFeedback | requireActive |
 
+评测中心列表端点共用查询参数：`resource_kind`（空=全部；单值=skill/agent/mcp/knowledge；逗号分隔多值=双轨聚合，如默认 `agent,knowledge`）、`resource_id`、`status`、`cursor`/`limit`（keyset 分页；limit 默认 20、上限 100，非法值 400）。`GET /evaluations/runs` 额外支持 `revision_id`：按 run 锚定版本精确过滤（`WHERE ... AND ($7='' OR revision_id=$7)`），资源详情「运行与回归」的版本筛选即走该服务端过滤，Batch 6 (b)。
+
 ### Workflow（JWT + member 角色；定义写入与运行控制部分 admin）
 
 | Method | Path | Handler | Extra role/state |

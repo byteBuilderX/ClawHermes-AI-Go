@@ -150,7 +150,7 @@ func TestPgCenterQueryRepository_ListRuns_paginated(t *testing.T) {
 
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT id,resource_kind,resource_id,revision_id").
-		WithArgs("", "", "", (*time.Time)(nil), (*string)(nil), 2).
+		WithArgs("", "", "", (*time.Time)(nil), (*string)(nil), 2, "").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "resource_kind", "resource_id", "revision_id", "status", "passed", "total_cases", "passed_cases", "created_by", "created_at",
 		}).AddRow("run-2", "prompt", "r-1", "rev-2", "succeeded", true, 10, 10, "user-2", now.Add(-1*time.Hour)).
@@ -320,7 +320,7 @@ func TestPgCenterQueryRepository_ListRuns_queryFails(t *testing.T) {
 
 	expectTenantTx(mock)
 	mock.ExpectQuery("SELECT id,resource_kind,resource_id,revision_id").
-		WithArgs("", "", "", (*time.Time)(nil), (*string)(nil), 2).
+		WithArgs("", "", "", (*time.Time)(nil), (*string)(nil), 2, "").
 		WillReturnError(pgx.ErrTxClosed)
 	mock.ExpectRollback()
 

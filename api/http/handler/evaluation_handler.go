@@ -681,8 +681,8 @@ func centerFilter(c *gin.Context, kind, id string) (port.CenterFilter, error) {
 	if err := validateCenterResourceKind(req.ResourceKind); err != nil {
 		return port.CenterFilter{}, err
 	}
-	return port.CenterFilter{ResourceKind: req.ResourceKind, ResourceID: req.ResourceID, Status: req.Status,
-		Cursor: req.Cursor, Limit: req.Limit}, nil
+	return port.CenterFilter{ResourceKind: req.ResourceKind, ResourceID: req.ResourceID, RevisionID: req.RevisionID,
+		Status: req.Status, Cursor: req.Cursor, Limit: req.Limit}, nil
 }
 
 // validateCenterResourceKind 校验评测中心被测类型筛选值：空串=全部；每个逗号分隔
