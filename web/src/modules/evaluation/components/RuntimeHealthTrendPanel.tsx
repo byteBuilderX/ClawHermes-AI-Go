@@ -12,6 +12,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 
 import { evaluationApi } from '../api/evaluation.api';
+import { resourceDisplayName } from '../lib/resourceName';
 import type { ResourceKind, ResourceSummary, RunSummary } from '../model/evaluation';
 
 import { HealthTrendChart } from './HealthTrendChart';
@@ -121,8 +122,13 @@ export const RuntimeHealthTrendPanel = ({ defaultKind, defaultResourceId }: {
         <Select aria-label="资源类型" allowClear placeholder="资源类型" style={{ width: 132 }} options={kindFilterOptions}
           value={kind} loading={resourcesLoading}
           onChange={(value: ResourceKind | undefined) => { setKind(value); setResourceId(''); }} />
-        <Select aria-label="资源" placeholder="选择资源以查看运行通过率趋势" style={{ width: 260 }} options={resources.map((item) => ({
-          value: item.resource_id, label: item.resource_id }))}
+        <Select aria-label="资源" placeholder="选择资源以查看运行通过率趋势" style={{ width: 260 }}
+          options={resources.map((item) => {
+            // 选项主文案用真名（resource_name → safe_summary），id 加括弱化核对；
+            // 真名缺失时直接以 id 作选项标识（下拉属身份选择控件，非名称单元格）。
+            const name = resourceDisplayName(item);
+            return { value: item.resource_id, label: name === '—' ? item.resource_id : `${name}（${item.resource_id}）` };
+          })}
           value={resourceId || undefined} loading={resourcesLoading}
           onChange={(value: string) => setResourceId(value)} />
       </Space>

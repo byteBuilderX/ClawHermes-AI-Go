@@ -4,10 +4,12 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { CreateEvaluationModal } from '../components/CreateEvaluationModal';
+import { ResourceNameCell } from '../components/ResourceNameCell';
 import { StatusTag, displayLabel, kindFilterOptions, runDisplayStatus } from '../components/evaluationView';
 import { useCreateEvaluation } from '../hooks/useCreateEvaluation';
 import { useRegisteredResources } from '../hooks/useRegisteredResources';
 import { useRunsPage } from '../hooks/useRunsPage';
+import { resourceDisplayName } from '../lib/resourceName';
 import type { CreateEvaluationPlan, ResourceKind, RunSummary } from '../model/evaluation';
 
 import { extractErrorMessage } from '@/shared/lib';
@@ -38,7 +40,9 @@ export const RunListPage = () => {
   };
 
   const columns: ColumnsType<RunSummary> = [
-    { title: '资源', dataIndex: 'resource_id', ellipsis: true },
+    { title: '资源', key: 'resource', render: (_: unknown, row: RunSummary) =>
+      <ResourceNameCell name={resourceDisplayName(row)} resourceId={row.resource_id} />,
+    },
     { title: '类型', dataIndex: 'resource_kind', width: 92, render: (value: string) => <Tag>{displayLabel(value)}</Tag> },
     { title: '锚定版本', dataIndex: 'revision_id', ellipsis: true },
     { title: '状态', dataIndex: 'status', width: 108,

@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { RunDetailView } from '../components/RunDetailView';
 import { displayLabel } from '../components/evaluationView';
 import { useRunDetailPage } from '../hooks/useRunDetailPage';
+import { resourceDisplayName } from '../lib/resourceName';
 
 import { useResponsive } from '@/shared/hooks';
 
@@ -22,7 +23,7 @@ export const RunDetailPage = () => {
       <Typography.Text code>{runId}</Typography.Text>
       {run && <>
         <Tag>{displayLabel(run.resource_kind)}</Tag>
-        <Typography.Text type="secondary">{run.resource_id} · 锚定版本 {run.revision_id}</Typography.Text>
+        <Typography.Text type="secondary">{resourceDisplayName(run)} · 锚定版本 {run.revision_id}</Typography.Text>
       </>}
     </Flex>
 

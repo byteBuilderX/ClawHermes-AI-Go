@@ -7,6 +7,8 @@ export interface ReviewItem {
   trace_id?: string;
   resource_kind: string;
   resource_id: string;
+  /** 资源真名（可选；后端评审条目可解析时下发，缺失则以 id 组合弱化展示）。 */
+  resource_name?: string;
   trigger_reason: string;
   risk_level?: string;
   snapshot: unknown;

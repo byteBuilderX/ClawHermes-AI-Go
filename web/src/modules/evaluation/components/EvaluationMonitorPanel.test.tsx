@@ -13,7 +13,7 @@ vi.mock('../api/evaluation.api', () => ({
 }));
 
 const rowA: MonitorResourceSummary = {
-  resource_kind: 'skill', resource_id: 'skill-a', sample_count: 128,
+  resource_kind: 'skill', resource_id: 'skill-a', resource_name: '智能订票助手', sample_count: 128,
   quality: [{ dimension: 'faithfulness', pass_rate: 0.92, avg_score: 0.92, avg_confidence: 0.87, samples: 128 }],
   behavior: { rule_hits: 15, retry_count: 3, escalation_count: 1, abandonment_count: 0,
     verdict: { pass: 120, flag: 6, block: 2 } },
@@ -35,7 +35,7 @@ describe('EvaluationMonitorPanel', () => {
   it('loads the top resource rows scoped by the default kind and resource', async () => {
     mocks.listMonitorResources.mockResolvedValue({ items: [rowA, rowB], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } });
     render(<EvaluationMonitorPanel defaultKind="skill" defaultResourceId="skill-a" />);
-    expect(await screen.findByText('技能 skill-a')).toBeInTheDocument();
+    expect(await screen.findByText('技能 智能订票助手')).toBeInTheDocument();
     expect(mocks.listMonitorResources).toHaveBeenCalledWith(expect.objectContaining({
       resource_kind: 'skill', resource_id: 'skill-a', limit: EVALUATION_MONITOR_RESOURCE_LIMIT,
       from: expect.any(String), to: expect.any(String),
@@ -53,7 +53,7 @@ describe('EvaluationMonitorPanel', () => {
     mocks.listMonitorResources.mockResolvedValue({ items: [rowA], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } });
     mocks.getMonitorTrend.mockResolvedValue({ resource_kind: 'skill', resource_id: 'skill-a', series: [], runs: [] });
     render(<EvaluationMonitorPanel defaultKind="skill" />);
-    fireEvent.click(await screen.findByText('技能 skill-a'));
+    fireEvent.click(await screen.findByText('技能 智能订票助手'));
     await waitFor(() => expect(mocks.getMonitorTrend).toHaveBeenCalledWith(expect.objectContaining({
       resource_kind: 'skill', resource_id: 'skill-a',
     })));
@@ -71,7 +71,7 @@ describe('EvaluationMonitorPanel', () => {
     mocks.listMonitorResources.mockResolvedValueOnce({ items: [rowA], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } });
     render(<EvaluationMonitorPanel defaultKind="skill" />);
     fireEvent.click(await screen.findByRole('button', { name: /重\s*试/ }));
-    expect(await screen.findByText('技能 skill-a')).toBeInTheDocument();
+    expect(await screen.findByText('技能 智能订票助手')).toBeInTheDocument();
     expect(mocks.listMonitorResources).toHaveBeenCalledTimes(2);
   });
 
@@ -86,7 +86,7 @@ describe('EvaluationMonitorPanel', () => {
   it('refetches with an earlier window when a RangePicker preset is chosen', async () => {
     mocks.listMonitorResources.mockResolvedValue({ items: [rowA], window: { from: '2026-08-27T00:00:00Z', to: '2026-09-03T00:00:00Z' } });
     render(<EvaluationMonitorPanel defaultKind="skill" />);
-    await screen.findByText('技能 skill-a');
+    await screen.findByText('技能 智能订票助手');
     const firstCall = mocks.listMonitorResources.mock.calls[0][0] as { from: string; to: string; limit: number };
 
     const panel = screen.getByTestId('evaluation-monitor-panel');

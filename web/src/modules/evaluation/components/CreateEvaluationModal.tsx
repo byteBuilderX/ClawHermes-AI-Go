@@ -1,6 +1,7 @@
 import { Form, Input, Modal, Radio, Select, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
+import { resourceDisplayName } from '../lib/resourceName';
 import type { CreateEvaluationPlan, EvaluationCase, ResourceKind, ResourceRef, ResourceSummary } from '../model/evaluation';
 
 import { AssertionModeField, CaseShapeField, JudgeSpecFields, StepJudgeFields, ToolSpecFields,
@@ -58,8 +59,12 @@ const formValuesToCase = (values: Values): EvaluationCase => {
   };
 };
 
-const resourceLabel = (item: ResourceSummary) =>
-  `${String((item.safe_summary && item.safe_summary.name) || item.resource_id)}（${item.resource_id}）`;
+const resourceLabel = (item: ResourceSummary) => {
+  // 目标资源下拉主文案用真名（resource_name → safe_summary），id 加括弱化核对；
+  // 真名缺失时直接以 id 作选项标识（下拉属身份选择控件，非名称单元格）。
+  const name = resourceDisplayName(item);
+  return name === '—' ? item.resource_id : `${name}（${item.resource_id}）`;
+};
 
 export const CreateEvaluationModal = ({ open, resources, focusResource, onClose, onSubmit }: {
   open: boolean; resources: ResourceSummary[]; onClose: () => void; onSubmit: (plan: CreateEvaluationPlan) => void;

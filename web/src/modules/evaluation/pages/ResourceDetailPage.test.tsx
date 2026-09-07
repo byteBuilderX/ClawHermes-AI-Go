@@ -90,7 +90,9 @@ describe('ResourceDetailPage', () => {
     api.getTimeline.mockResolvedValue({ items: [timelineEvent] });
     renderDetail('/evaluations/resources/skill/skill-1');
 
-    expect(await screen.findByText('skill-1')).toBeInTheDocument();
+    expect(await screen.findByText('客服技能')).toBeInTheDocument();
+    // 页头主文案是真实名称，裸资源 id 降级为弱化 code 供核对。
+    expect(screen.getByText('skill-1')).toBeInTheDocument();
     expect(screen.getByText('技能')).toBeInTheDocument();
     expect(screen.getByText('进行中')).toBeInTheDocument();
     expect(screen.getByText('稳定版本 v1')).toBeInTheDocument();

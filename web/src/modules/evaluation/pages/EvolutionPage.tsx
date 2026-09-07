@@ -9,8 +9,10 @@ import { CandidateEvaluationModal } from '../components/CandidateEvaluationModal
 import { EvolutionCommandModal, type ExperimentCommandValues, type FeedbackCommandValues,
   type OptimizationCommandValues } from '../components/EvolutionCommandModal';
 import { ExperimentDrawer } from '../components/ExperimentDrawer';
+import { ResourceNameCell } from '../components/ResourceNameCell';
 import { StatusTag, displayLabel, kindFilterOptions } from '../components/evaluationView';
 import { useEvolutionPage } from '../hooks/useEvolutionPage';
+import { resourceDisplayName } from '../lib/resourceName';
 import type { CandidateSummary, ExperimentSummary, ResourceKind } from '../model/evaluation';
 
 import { useTenantRole } from '@/modules/iam';
@@ -48,7 +50,9 @@ export const EvolutionPage = () => {
   };
 
   const candidateColumns: ColumnsType<CandidateSummary> = [
-    { title: '资源', dataIndex: 'resource_id', ellipsis: true },
+    { title: '资源', key: 'resource', render: (_: unknown, row: CandidateSummary) => (
+      <ResourceNameCell name={resourceDisplayName(row)} resourceId={row.resource_id} />
+    ) },
     { title: '类型', dataIndex: 'resource_kind', width: 92, render: (value: string) => <Tag>{displayLabel(value)}</Tag> },
     { title: '候选版本', dataIndex: 'revision_id', ellipsis: true },
     { title: '来源', dataIndex: 'source', width: 120 },
@@ -58,7 +62,9 @@ export const EvolutionPage = () => {
       onClick={() => setCandidateId(row.id)}>详情</Button> },
   ];
   const experimentColumns: ColumnsType<ExperimentSummary> = [
-    { title: '资源', dataIndex: 'resource_id', ellipsis: true },
+    { title: '资源', key: 'resource', render: (_: unknown, row: ExperimentSummary) => (
+      <ResourceNameCell name={resourceDisplayName(row)} resourceId={row.resource_id} />
+    ) },
     { title: '类型', dataIndex: 'resource_kind', width: 92, render: (value: string) => <Tag>{displayLabel(value)}</Tag> },
     { title: '稳定版本', dataIndex: 'stable_revision_id', ellipsis: true },
     { title: '候选版本', dataIndex: 'canary_revision_id', ellipsis: true },

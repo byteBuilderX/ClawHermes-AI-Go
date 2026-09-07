@@ -1,4 +1,4 @@
-import { Descriptions, Skeleton, Tag, Typography } from 'antd';
+import { Descriptions, Skeleton, Tag, Tooltip, Typography } from 'antd';
 import { Link } from 'react-router-dom';
 
 import type { RunResourceAnchor } from '../model/evaluation';
@@ -19,24 +19,34 @@ export const RunAnchorPanel = ({ anchors }: { anchors: RunResourceAnchor[] | nul
       ) : (
         <>
           <Descriptions bordered size="small" column={1}>
-            {items.map((item, index) => (
-              <Descriptions.Item
-                key={`${item.kind}:${item.resource_id}`}
-                label={index === 0 ? (
-                  <span><Tag color="blue">被测</Tag>{displayLabel(item.kind)}</span>
-                ) : displayLabel(item.kind)}
-              >
-                {item.kind === 'skill' ? (
-                  <Link to={`/skills/${item.resource_id}/workspace`}>{item.resource_id}</Link>
-                ) : (
-                  <Typography.Text code>{item.resource_id}</Typography.Text>
-                )}
-                {' '}
-                <Typography.Text type="secondary">版本</Typography.Text>
-                {' '}
-                <Typography.Text code>{item.revision_id}</Typography.Text>
-              </Descriptions.Item>
-            ))}
+            {items.map((item, index) => {
+              // 锚点 DTO 无 resource_name，拿不到真名时不得用裸 resource_id 冒充名称：
+              // 主文案用中性「资源」，具体 id 保留在 tooltip / aria-label 供核对。
+              const tooltipTitle = `锚定${displayLabel(item.kind)}资源 ${item.resource_id}`;
+              return (
+                <Descriptions.Item
+                  key={`${item.kind}:${item.resource_id}`}
+                  label={index === 0 ? (
+                    <span><Tag color="blue">被测</Tag>{displayLabel(item.kind)}</span>
+                  ) : displayLabel(item.kind)}
+                >
+                  {item.kind === 'skill' ? (
+                    <Tooltip title={tooltipTitle}>
+                      <Link aria-label={`查看锚定的${displayLabel(item.kind)}资源 ${item.resource_id}`}
+                        to={`/skills/${item.resource_id}/workspace`}>资源</Link>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip title={tooltipTitle}>
+                      <Typography.Text>资源</Typography.Text>
+                    </Tooltip>
+                  )}
+                  {' '}
+                  <Typography.Text type="secondary">版本</Typography.Text>
+                  {' '}
+                  <Typography.Text code>{item.revision_id}</Typography.Text>
+                </Descriptions.Item>
+              );
+            })}
           </Descriptions>
           {items.length <= 1 && (
             <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>

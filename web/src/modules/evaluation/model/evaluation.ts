@@ -332,7 +332,8 @@ export const centerOverviewSchema = z.object({
 export type CenterOverview = z.infer<typeof centerOverviewSchema>;
 
 export const resourceSummarySchema = z.object({
-  id: z.string(), resource_id: z.string(), status: z.string(), stable_revision_id: z.string().optional(),
+  id: z.string(), resource_id: z.string(), resource_name: z.string().optional(),
+  status: z.string(), stable_revision_id: z.string().optional(),
   latest_run_status: z.string().optional(), resource_kind: resourceKindSchema,
   safe_summary: safeSummarySchema.default({}), created_at: z.string(),
 }).strict();
@@ -379,7 +380,8 @@ export const suiteRevisionMetaSchema = z.object({
 export type SuiteRevisionMeta = z.infer<typeof suiteRevisionMetaSchema>;
 
 export const runSummarySchema = z.object({
-  id: z.string(), resource_id: z.string(), revision_id: z.string(), status: z.string(),
+  id: z.string(), resource_id: z.string(), resource_name: z.string().optional(),
+  revision_id: z.string(), status: z.string(),
   resource_kind: resourceKindSchema, passed: z.boolean(), total_cases: z.number(), passed_cases: z.number(),
   created_by: z.string().optional(), created_at: z.string(),
 }).strict();
@@ -388,7 +390,8 @@ export const runPageSchema = page(runSummarySchema);
 export type RunPage = z.infer<typeof runPageSchema>;
 
 export const candidateSummarySchema = z.object({
-  id: z.string(), resource_id: z.string(), revision_id: z.string(), parent_revision_id: z.string(),
+  id: z.string(), resource_id: z.string(), resource_name: z.string().optional(),
+  revision_id: z.string(), parent_revision_id: z.string(),
   source: z.string(), status: z.string(), resource_kind: resourceKindSchema, rank: z.number().optional(),
   state_version: z.number().int().positive(), safe_diff: candidateSafeDiffSchema,
   created_by: z.string().optional(), created_at: z.string(),
@@ -406,7 +409,8 @@ const promotionEvidenceSchema = z.object({
     'guardrail_violation', 'safety_stop', 'recommendation_hold']), category: z.string(), message: z.string() }).strict()),
 }).strict();
 export const experimentSummarySchema = z.object({
-  id: z.string(), resource_id: z.string(), stable_revision_id: z.string(), canary_revision_id: z.string(),
+  id: z.string(), resource_id: z.string(), resource_name: z.string().optional(),
+  stable_revision_id: z.string(), canary_revision_id: z.string(),
   status: z.string(), recommendation: z.string(), resource_kind: resourceKindSchema, stage_percent: z.number(),
   safety_stopped: z.boolean(), state_version: z.number().int().positive(), gates: z.object({
     quality: experimentGateSchema, cost: experimentGateSchema, latency: experimentGateSchema,
@@ -515,6 +519,7 @@ export type ProcessBaseline = z.infer<typeof processBaselineSchema>;
 export const monitorResourceSummarySchema = z.object({
   resource_kind: resourceKindSchema,
   resource_id: z.string(),
+  resource_name: z.string().optional(),
   sample_count: z.number(),
   quality: z.array(qualityDimSchema),
   behavior: behaviorStatsSchema,

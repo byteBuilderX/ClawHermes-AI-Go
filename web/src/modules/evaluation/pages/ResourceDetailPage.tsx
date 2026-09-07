@@ -10,6 +10,7 @@ import { RegisterResourceModal } from '../components/RegisterResourceModal';
 import { TimelinePanel } from '../components/TimelinePanel';
 import { StatusTag, displayLabel, runDisplayStatus } from '../components/evaluationView';
 import { useResourceDetailPage } from '../hooks/useResourceDetailPage';
+import { resourceDisplayName } from '../lib/resourceName';
 import type {
   CandidateSummary,
   ExperimentSummary,
@@ -51,12 +52,16 @@ export const ResourceDetailPage = () => {
   const { resource, runs, candidates, experiments, events, loading, error, reload } =
     useResourceDetailPage({ resourceKind: kind, resourceId });
   const registrable = kind !== undefined && REGISTRABLE.includes(kind);
+  // 页头主文案用真名（建档后后端下发 resource_name / safe_summary）；未建档时无名称来源，
+  // 退回 URL 中的资源 id 作身份标识（登记 CTA 语境）。真名与 id 不同时把 id 降级为弱化 code。
+  const pageTitle = resource ? resourceDisplayName(resource) : resourceId;
 
   return <div>
     <Button type="link" icon={<ArrowLeftOutlined />} style={{ paddingLeft: 0, marginBottom: 8 }}
       onClick={() => navigate('/evaluations/resources')}>返回被测资源</Button>
     {kind && <Flex align="center" gap={8} wrap style={{ marginBottom: 12 }}>
-      <Typography.Title level={4} style={{ margin: 0 }}>{resourceId}</Typography.Title>
+      <Typography.Title level={4} style={{ margin: 0 }}>{pageTitle}</Typography.Title>
+      {resource && pageTitle !== resourceId && <Typography.Text code type="secondary">{resourceId}</Typography.Text>}
       <Tag>{displayLabel(kind)}</Tag>
       {resource && <StatusTag value={resource.status} />}
       {resource && <Typography.Text type="secondary">稳定版本 {resource.stable_revision_id || '未建档'}</Typography.Text>}
@@ -153,7 +158,7 @@ const RunRegressionSection = ({ runs, kind, resourceId, onOpenRun }: {
   const points: HealthTrendPoint[] = visible.slice().reverse().map((run) => ({
     id: run.id,
     timeLabel: timeLabel(run.created_at),
-    fullLabel: `${run.id} · ${run.resource_id} · ${run.passed_cases}/${run.total_cases} 通过 · ${timeLabel(run.created_at)}`,
+    fullLabel: `${run.id} · ${resourceDisplayName(run)} · ${run.passed_cases}/${run.total_cases} 通过 · ${timeLabel(run.created_at)}`,
     passRate: run.total_cases > 0 ? run.passed_cases / run.total_cases : null,
     passed: run.passed,
   }));

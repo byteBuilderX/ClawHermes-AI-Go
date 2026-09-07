@@ -10,9 +10,11 @@ import type { Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
 
 import { evaluationApi } from '../api/evaluation.api';
+import { resourceDisplayName } from '../lib/resourceName';
 import type { MonitorFilters, MonitorResourceSummary, ResourceKind } from '../model/evaluation';
 
 import { MonitorResourceDrawer } from './MonitorResourceDrawer';
+import { ResourceNameCell } from './ResourceNameCell';
 import { displayLabel, kindFilterOptions } from './evaluationView';
 
 import {
@@ -79,7 +81,10 @@ export const EvaluationMonitorPanel = ({ defaultKind, defaultResourceId, isMobil
   const scoped = Boolean(kind || resourceId);
 
   const columns: ColumnsType<MonitorResourceSummary> = [
-    { title: '资源', key: 'resource', render: (_, row) => `${displayLabel(row.resource_kind)} ${row.resource_id}` },
+    { title: '资源', key: 'resource', render: (_, row) => (
+      <ResourceNameCell name={`${displayLabel(row.resource_kind)} ${resourceDisplayName(row)}`}
+        resourceId={row.resource_id} />
+    ) },
     { title: '样本', dataIndex: 'sample_count', width: 80, align: 'right' },
     { title: '质量通过率', dataIndex: 'quality', render: (value: MonitorResourceSummary['quality']) => value.length
       ? value.map((dim) => (
