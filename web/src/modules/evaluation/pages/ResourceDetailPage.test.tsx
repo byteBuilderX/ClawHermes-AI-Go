@@ -13,8 +13,13 @@ const api = vi.hoisted(() => ({
   listCandidates: vi.fn(),
   listExperiments: vi.fn(),
   getTimeline: vi.fn(),
+  listAgents: vi.fn(),
+  listWorkspaces: vi.fn(),
 }));
 vi.mock('../api/evaluation.api', () => ({ evaluationApi: api }));
+// 未建档 CTA 就地弹 RegisterResourceModal，打开时按类型拉取候选，mock 隔离真实模块。
+vi.mock('@/modules/agent/api/agent.api', () => ({ agentApi: { list: api.listAgents } }));
+vi.mock('@/modules/knowledge/api/knowledge.api', () => ({ knowledgeApi: { list: api.listWorkspaces } }));
 
 const skillRow = {
   id: 'row-1', resource_id: 'skill-1', status: 'active', stable_revision_id: 'v1',
@@ -76,6 +81,8 @@ describe('ResourceDetailPage', () => {
     api.listCandidates.mockResolvedValue({ items: [] });
     api.listExperiments.mockResolvedValue({ items: [] });
     api.getTimeline.mockResolvedValue({ items: [] });
+    api.listAgents.mockResolvedValue([]);
+    api.listWorkspaces.mockResolvedValue([]);
   });
 
   it('composes header, regression, timeline and candidate sections for a registered resource', async () => {
@@ -143,16 +150,15 @@ describe('ResourceDetailPage', () => {
     await waitFor(() => expect(path()).toHaveTextContent('/evaluations/evolution'));
   });
 
-  it('offers admin a register CTA that deep-links the hub for an unregistered agent', async () => {
+  it('offers admin a register CTA that opens a local modal for an unregistered agent', async () => {
     renderDetail('/evaluations/resources/agent/agent-9');
     expect(await screen.findByText(/尚未在评测中心建档/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '登记该资源' }));
-    await waitFor(() => {
-      expect(path()).toHaveTextContent('/evaluations');
-      expect(query()).toHaveTextContent('action=register');
-      expect(query()).toHaveTextContent('kind=agent');
-      expect(query()).toHaveTextContent('resource_id=agent-9');
-    });
+    // 就地弹窗登记，不再跳 hub：URL 保持资源详情且无 ?action= 状态残留。
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalled());
+    expect(screen.getByRole('dialog', { name: '登记被测资源' })).toBeInTheDocument();
+    expect(path()).toHaveTextContent('/evaluations/resources/agent/agent-9');
+    expect(query()).not.toHaveTextContent('action=register');
   });
 
   it('keeps the register CTA and command hint hidden from members', async () => {

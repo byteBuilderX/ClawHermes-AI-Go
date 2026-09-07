@@ -6,12 +6,14 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { evaluationApi } from '../api/evaluation.api';
 import { HealthTrendChart, type HealthTrendPoint } from '../components/HealthTrendChart';
+import { RegisterResourceModal } from '../components/RegisterResourceModal';
 import { TimelinePanel } from '../components/TimelinePanel';
 import { StatusTag, displayLabel, runDisplayStatus } from '../components/evaluationView';
 import { useResourceDetailPage } from '../hooks/useResourceDetailPage';
 import type {
   CandidateSummary,
   ExperimentSummary,
+  RegistrableResourceKind,
   ResourceKind,
   RunSummary,
 } from '../model/evaluation';
@@ -45,6 +47,7 @@ export const ResourceDetailPage = () => {
   const canManage = isAdmin;
   const kind = VALID_KINDS.includes(params.kind as ResourceKind) ? params.kind as ResourceKind : undefined;
   const resourceId = params.id || '';
+  const [registerOpen, setRegisterOpen] = useState(false);
   const { resource, runs, candidates, experiments, events, loading, error, reload } =
     useResourceDetailPage({ resourceKind: kind, resourceId });
   const registrable = kind !== undefined && REGISTRABLE.includes(kind);
@@ -97,9 +100,13 @@ export const ResourceDetailPage = () => {
       message={`${displayLabel(kind)}「${resourceId}」尚未在评测中心建档。`}
       description={registrable ? '建档后可在此回看版本↔运行证据账本；登记会为当前产品稳定版本建立评测基线。'
         : '技能/MCP 为历史只读类型，不再提供登记入口，仅可回看旧证据。'}
-      action={canManage && registrable ? <Button type="primary" onClick={() =>
-        navigate(`/evaluations?action=register&kind=${kind}&resource_id=${encodeURIComponent(resourceId)}`)}>
+      action={canManage && registrable ? <Button type="primary" onClick={() => setRegisterOpen(true)}>
         登记该资源</Button> : null} />}
+    {/* 未建档 CTA 就地登记，不再跳转 hub；URL 保持当前资源详情，无 ?action= 状态残留 */}
+    {registrable && <RegisterResourceModal open={registerOpen}
+      initial={{ kind: kind as RegistrableResourceKind, resource_id: resourceId }} registered={[]}
+      onClose={() => setRegisterOpen(false)}
+      onRegistered={() => { setRegisterOpen(false); reload(); }} />}
   </div>;
 };
 

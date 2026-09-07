@@ -460,7 +460,7 @@ export interface EvaluationCenterFilters {
 //  - unpublished：目标评测集只有未发布草稿（从未 publish），先把 draft publish 成 v1 再跑。
 //  - create：内联新建含起始 case 的评测集 → publish v1 → 跑（旧「内联 1 case 即跑」升级版，
 //     suite 成为详情页可继续补 case/再发布的复用对象）。
-// 幂等 / in-flight 去重由 useEvaluationCenter 按计划指纹 + idempotency_key 处理。
+// 幂等 / in-flight 去重由 useCreateEvaluation 按计划指纹 + idempotency_key 处理。
 export type CreateEvaluationPlan =
   | { mode: 'published'; resource: ResourceRef; suiteId: string; revisionId: string }
   | { mode: 'unpublished'; resource: ResourceRef; suiteId: string }

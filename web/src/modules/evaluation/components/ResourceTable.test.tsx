@@ -14,8 +14,19 @@ describe('ResourceTable', () => {
     const onOpen = vi.fn();
     render(<ResourceTable resources={[row]} loading={false} filtered={false} onOpen={onOpen} />);
     expect(screen.getAllByRole('columnheader')).toHaveLength(5);
-    fireEvent.click(screen.getByRole('button', { name: '查看 skill-1' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看 skill-1 详情' }));
     expect(onOpen).toHaveBeenCalledWith(row);
+  });
+
+  it('splits timeline drawer and evidence page actions when detail navigation is wired', () => {
+    const onOpen = vi.fn();
+    const onOpenDetail = vi.fn();
+    render(<ResourceTable resources={[row]} loading={false} filtered={false} onOpen={onOpen}
+      onOpenDetail={onOpenDetail} />);
+    fireEvent.click(screen.getByRole('button', { name: '查看 skill-1 时间线' }));
+    expect(onOpen).toHaveBeenCalledWith(row);
+    fireEvent.click(screen.getByRole('button', { name: '查看 skill-1 详情' }));
+    expect(onOpenDetail).toHaveBeenCalledWith(row);
   });
 
   it('uses distinct Chinese guidance for empty and filtered results', () => {
