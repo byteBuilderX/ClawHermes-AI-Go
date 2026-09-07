@@ -59,8 +59,14 @@ config:
   opikUrl: "http://opik-backend.opik.svc.cluster.local:8080"
   opikProject: "stratum"
   opikWorkspace: "default"
+  # tracePayloadEnabled=false 仅关闭 agent 执行 trace 的落盘（证据已走 Opik）；
+  # 但 buildRevisionObjectStore 只看 ENDPOINT/ACCESS/SECRET/BUCKET 是否齐全——
+  # 评测被测建档（agent/knowledge）依赖的 eval revision 对象存储复用它，端点留空
+  # 会导致「登记被测资源」POST /evaluations/resources/:kind/:id/baseline 报
+  # provider unavailable（providers map 里 agent/knowledge 未注册）。故 endpoint
+  # 必须指向集群内 minio，凭据由 deploy.yml 从 stratum-secrets 注入。
   tracePayloadEnabled: "false"
-  tracePayloadEndpoint: ""
+  tracePayloadEndpoint: "stratum-minio:9000"
   tracePayloadBucket: "stratum-trace-evidence"
   tracePayloadUseTls: "false"
   frontendUrl: "https://demo.example.com"
