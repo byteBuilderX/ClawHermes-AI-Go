@@ -70,9 +70,28 @@ func makeLLMNode(capGW port.CapabilityGateway, ledger TokenRecorder, logger *zap
 			s.SkipNextLLM = false
 			return s, nil
 		}
+		// 无进展停滞判定（连续 run + 振荡窗口，无状态派生，见 no_progress.go）：
+		// 命中 Terminate → 本入口提前业务终止收尾（不发起本轮 LLM、不执行工具）；
+		// 命中 Nudge → 本轮请求尾部注入换路提示（nudgeContent）给模型一次转机。
+		// 已业务终止 / 强制收尾步在判定内让位（返回 None）。判定所需的振荡提示
+		// 状态副作用（置位 / 锚点复位 / 终止写入）由 decideNoProgress 一并施加。
+		s, noP, nudgeContent := decideNoProgress(s, logger)
+		if noP == noProgressTerminate {
+			return s, nil
+		}
 		start := time.Now()
 
 		tools, messages, _ := prepareLLMRequest(ctx, &s)
+		if noP == noProgressNudge {
+			// 换路提示只进本轮请求（s.Messages 不落合成 user 轮，不会当用户气泡
+			// 持久化）；尾部 user 角色与 BuildContextMessages「任务指令在尾部 user」
+			// 一致，对 OpenAI 兼容网关合法。tools 保持可用，模型可换工具继续推进。
+			// 文案由 decideNoProgress 按命中形态（连续 run / 振荡）给出，恒非空。
+			messages = append(messages, port.LLMMessage{
+				Role:    "user",
+				Content: nudgeContent,
+			})
+		}
 		ctx, llmSpan := startLLMTrace(ctx, &s, messages, tools, start)
 		defer llmSpan.End()
 
