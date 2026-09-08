@@ -284,7 +284,7 @@ func (m *mockVectorStore) Search(ctx context.Context, collectionName string, que
 			}
 			// Return with fixed similarity score
 			docCopy := *doc
-			docCopy.Distance = 0.05
+			docCopy.Similarity = 0.05
 			hits = append(hits, &docCopy)
 		}
 	}

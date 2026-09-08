@@ -16,7 +16,10 @@ type SearchResult struct {
 	Content        string
 	SourceDocument string
 	ChunkIndex     int64
-	Score          float32
+	// Score is a 0-1 normalized similarity, larger = more relevant. It is
+	// produced by normalizeScore from the raw Milvus metric score (COSINE by
+	// default), so downstream code never sees metric-specific raw distances.
+	Score float32
 }
 
 type MCPRequest struct {

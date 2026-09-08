@@ -189,7 +189,7 @@ func (a *MilvusPortAdapter) Search(ctx context.Context, collectionName string, q
 			Metadata: map[string]interface{}{
 				"content": result.Content, "source_document": result.SourceDocument, "chunk_index": result.ChunkIndex,
 			},
-			Distance: float64(result.Score),
+			Similarity: float64(result.Score),
 		})
 	}
 	return docs, nil

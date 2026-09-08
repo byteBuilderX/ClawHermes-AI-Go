@@ -22,6 +22,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// defaultMetricType is the single source of truth for the vector metric used
+// when building a collection index and when searching it. Milvus fixes the
+// metric on the index and requires search to pass the same one (otherwise
+// "metric type not match"), so all three call sites must share one value and
+// never drift. COSINE is scale-invariant to vector length (unlike L2) and its
+// raw score is a similarity in [-1,1] (larger = closer).
+const defaultMetricType entity.MetricType = entity.COSINE
+
 type VectorStore struct {
 	mu       sync.RWMutex
 	client   client.Client
@@ -174,7 +182,7 @@ func (vs *VectorStore) createCollectionWithDimLocked(ctx context.Context, collec
 			vs.dimCache.Store(collectionName, dim)
 			idxList, _ := c.DescribeIndex(ctx, collectionName, "vector")
 			if len(idxList) == 0 {
-				flatIdx, ierr := entity.NewIndexIvfFlat(entity.L2, 128)
+				flatIdx, ierr := entity.NewIndexIvfFlat(defaultMetricType, 128)
 				if ierr == nil {
 					_ = c.CreateIndex(ctx, collectionName, "vector", flatIdx, false)
 				}
@@ -237,7 +245,7 @@ func (vs *VectorStore) createCollectionWithDimLocked(ctx context.Context, collec
 		vs.logger.Error("failed to create collection", zap.String("collection", collectionName), zap.Error(err))
 		return classifyAvailabilityError("create collection", fmt.Errorf("failed to create collection %s: %w", collectionName, err))
 	}
-	idx, err := entity.NewIndexIvfFlat(entity.L2, 128)
+	idx, err := entity.NewIndexIvfFlat(defaultMetricType, 128)
 	if err != nil {
 		return fmt.Errorf("failed to build index param: %w", err)
 	}
@@ -482,7 +490,8 @@ func (vs *VectorStore) searchWithFilter(ctx context.Context, collectionName stri
 	vectors := make([]entity.Vector, 1)
 	vectors[0] = entity.FloatVector(queryVector)
 
-	// Search parameters - L2 distance metric
+	// IVF_FLAT search parameters (nprobe). The metric type is passed below in
+	// searchWithParam and must match the collection index metric.
 	sp, err := entity.NewIndexIvfFlatSearchParam(10)
 	if err != nil {
 		vs.logger.Error("failed to create search params", zap.Error(err))
@@ -497,7 +506,7 @@ func (vs *VectorStore) searchWithFilter(ctx context.Context, collectionName stri
 	if len(results) == 0 {
 		return []SearchResult{}, nil
 	}
-	out := searchRowsToResults(results[0])
+	out := searchRowsToResults(results[0], defaultMetricType)
 	vs.logger.Debug("search completed", zap.Int("results", len(out)))
 	return out, nil
 }
@@ -523,8 +532,8 @@ func (vs *VectorStore) searchWithParam(
 		expression,
 		[]string{"id", "content", "source_document", "chunk_index"}, // output fields
 		vectors,
-		"vector",  // vector field name
-		entity.L2, // metric type
+		"vector",          // vector field name
+		defaultMetricType, // metric type (must match the index metric)
 		topK,
 		sp,
 	)
@@ -553,8 +562,10 @@ func (vs *VectorStore) searchWithParam(
 }
 
 // searchRowsToResults maps one Milvus hit batch into SearchResults, skipping
-// rows whose id or content cell is unavailable.
-func searchRowsToResults(result client.SearchResult) []SearchResult {
+// rows whose id or content cell is unavailable. Raw metric scores are passed
+// through normalizeScore so SearchResult.Score always carries the repository's
+// external contract: a 0-1 normalized similarity, larger = more relevant.
+func searchRowsToResults(result client.SearchResult, metric entity.MetricType) []SearchResult {
 	idCol := result.Fields.GetColumn("id")
 	contentCol := result.Fields.GetColumn("content")
 	sourceCol := result.Fields.GetColumn("source_document")
@@ -563,9 +574,9 @@ func searchRowsToResults(result client.SearchResult) []SearchResult {
 
 	out := make([]SearchResult, 0, result.ResultCount)
 	for i := 0; i < result.ResultCount; i++ {
-		var score float32
+		score := float32(0)
 		if i < len(scores) {
-			score = float32(scores[i])
+			score = normalizeScore(metric, float32(scores[i]))
 		}
 		id := columnString(idCol, i)
 		content := columnString(contentCol, i)
@@ -580,6 +591,35 @@ func searchRowsToResults(result client.SearchResult) []SearchResult {
 		}
 	}
 	return out
+}
+
+// normalizeScore maps a raw Milvus metric score onto the repository's external
+// contract: a 0-1 normalized similarity where larger means more relevant.
+//
+//   - COSINE: Milvus returns the raw cosine similarity in [-1,1] (verified on a
+//     real Milvus v2.4.15: same-direction -> 1, orthogonal -> 0, opposite -> -1,
+//     and scale-invariant). (s+1)/2 folds it onto [0,1] with the orthogonal
+//     case at 0.5.
+//   - L2 and anything unknown fall back to 1/(1+d) (distance d, smaller is
+//     closer), preserving the legacy l2ToSim mapping so ordering never inverts.
+//
+// The result is clamped to [0,1] so callers can rely on the similarity contract
+// even against float32 rounding at the extremes.
+func normalizeScore(metric entity.MetricType, raw float32) float32 {
+	var sim float32
+	switch metric {
+	case entity.COSINE:
+		sim = (raw + 1) / 2
+	default:
+		sim = 1 / (1 + raw)
+	}
+	if sim < 0 {
+		return 0
+	}
+	if sim > 1 {
+		return 1
+	}
+	return sim
 }
 
 // columnString reads one string cell, tolerating missing columns and type

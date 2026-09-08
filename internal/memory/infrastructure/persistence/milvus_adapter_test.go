@@ -344,7 +344,7 @@ func TestMilvusPortAdapterSearchMapsResultsAndPropagatesErrors(t *testing.T) {
 	}
 	if len(docs) != 1 || docs[0].ID != "fact-1" || docs[0].Metadata["content"] != "content" ||
 		docs[0].Metadata["source_document"] != "source" || docs[0].Metadata["chunk_index"] != int64(3) ||
-		docs[0].Distance != 0.25 || docs[0].Similarity != 0 {
+		docs[0].Similarity != 0.25 {
 		t.Fatalf("mapped docs = %#v", docs)
 	}
 

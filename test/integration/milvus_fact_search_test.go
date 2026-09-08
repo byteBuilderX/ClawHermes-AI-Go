@@ -49,11 +49,15 @@ func TestMilvusFactSearchScopeIsolationAndMissingCollection(t *testing.T) {
 		_ = store.DeleteCollection(cleanupCtx, collection)
 	})
 
+	// Nonzero, angle-distinct fixtures: the store uses the COSINE metric, which
+	// is scale-invariant (zero/near-zero vectors would be degenerate). Query is
+	// [1,0]: user-scope is collinear (cos 1 -> similarity 1), current-agent is
+	// orthogonal (cos 0 -> similarity 0.5).
 	docs := []*memport.VectorDoc{
-		factVectorDoc("other-user", "other-user", "", "user", []float32{0, 0}),
-		factVectorDoc("user-scope", "user-1", "", "user", []float32{0.1, 0}),
-		factVectorDoc("current-agent", "user-1", "agent-1", "agent", []float32{0.2, 0}),
-		factVectorDoc("other-agent", "user-1", "agent-2", "agent", []float32{0, 0}),
+		factVectorDoc("other-user", "other-user", "", "user", []float32{0.5, 0.5}),
+		factVectorDoc("user-scope", "user-1", "", "user", []float32{1, 0}),
+		factVectorDoc("current-agent", "user-1", "agent-1", "agent", []float32{0, 1}),
+		factVectorDoc("other-agent", "user-1", "agent-2", "agent", []float32{-1, 0}),
 	}
 	if err := adapter.Upsert(ctx, collection, docs); err != nil {
 		t.Fatalf("upsert fixtures: %v", err)
@@ -63,18 +67,18 @@ func TestMilvusFactSearchScopeIsolationAndMissingCollection(t *testing.T) {
 	}
 
 	filter := memport.VectorSearchFilter{UserID: "user-1", AgentID: "agent-1", IncludeUserScope: true, IncludeAgentScope: true}
-	hits, err := adapter.Search(ctx, collection, []float32{0, 0}, 10, filter)
+	hits, err := adapter.Search(ctx, collection, []float32{1, 0}, 10, filter)
 	if err != nil {
 		t.Fatalf("search fixtures: %v", err)
 	}
 	if got := hitIDs(hits); fmt.Sprint(got) != fmt.Sprint([]string{"user-scope", "current-agent"}) {
 		t.Fatalf("hit IDs = %v, want scope-safe ordered results", got)
 	}
-	if !(hits[0].Distance < hits[1].Distance) {
-		t.Fatalf("distances not ordered ascending: %v, %v", hits[0].Distance, hits[1].Distance)
+	if !(hits[0].Similarity > hits[1].Similarity) {
+		t.Fatalf("similarities not ordered descending: %v, %v", hits[0].Similarity, hits[1].Similarity)
 	}
 
-	missing, err := adapter.Search(ctx, collection+"_missing", []float32{0, 0}, 10, filter)
+	missing, err := adapter.Search(ctx, collection+"_missing", []float32{1, 0}, 10, filter)
 	if err != nil {
 		t.Fatalf("missing collection search: %v", err)
 	}
@@ -95,14 +99,14 @@ func probeMilvusCollectionLifecycle(ctx context.Context, store *storagemilvus.Ve
 		return err
 	}
 	if err := store.Insert(ctx, collection, []storagemilvus.DocumentChunk{{
-		ID: "readiness", UserID: "readiness-user", Scope: "user", Content: "readiness", Vector: []float32{0, 0},
+		ID: "readiness", UserID: "readiness-user", Scope: "user", Content: "readiness", Vector: []float32{1, 1},
 	}}, ""); err != nil {
 		return err
 	}
 	if err := store.Flush(ctx, collection); err != nil {
 		return err
 	}
-	_, err := store.SearchWithFilter(ctx, collection, []float32{0, 0}, 1, `user_id == "readiness-user" && scope == "user"`)
+	_, err := store.SearchWithFilter(ctx, collection, []float32{1, 1}, 1, `user_id == "readiness-user" && scope == "user"`)
 	return err
 }
 

@@ -233,9 +233,11 @@ func (h *RecallHandler) tryVectorSearch(ctx context.Context, tenantID, userID, a
 	merged := make([]vector.SearchResult, 0, len(rawResults)+len(factsResults))
 	merged = append(merged, rawResults...)
 	merged = append(merged, factsResults...)
-	// Sort by ascending L2 distance (smaller = more similar) so downstream RRF
-	// ranks the closest match across both collections first.
-	sort.Slice(merged, func(i, j int) bool { return merged[i].Score < merged[j].Score })
+	// Score is a 0-1 normalized similarity (larger = more relevant) produced by
+	// the storage layer. Sort descending so downstream RRF ranks the closest
+	// match across both collections first; the re-sort is required because the
+	// raw/facts legs each returned their own best-first order.
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
 	outage := errors.Join(rawOutage, factsOutage)
 	recordVectorDegradation(h.metrics, outage)
 
