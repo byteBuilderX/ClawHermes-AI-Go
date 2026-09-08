@@ -10,6 +10,8 @@ import type {
 
 import { DocPreviewDrawer } from './DocPreviewDrawer';
 
+import { ParentContextBlock } from '@/shared/ui';
+
 const { Text, Paragraph } = Typography;
 
 // 拒答文案 map：reason 固定枚举（后端 pkg/constants 单一事实源），文案只
@@ -85,6 +87,8 @@ const SourceItem = ({ source }: { source: QuerySource }) => {
       >
         {source.content}
       </Paragraph>
+      {/* 命中 chunk 所在整节原文(Parent-Child 策略才有值)就地展开看上下文 */}
+      {source.parent_content && <ParentContextBlock content={source.parent_content} />}
       {previewable && (
         <DocPreviewDrawer
           open={previewOpen}

@@ -206,6 +206,9 @@ func (h *RAGHandler) Query(c *gin.Context) {
 			"document_id":    src.DocumentID,
 			"document_title": src.DocumentTitle,
 			"content":        src.Content,
+			// parent_content: 命中 chunk 所在整节原文(Parent-Child 策略);非该
+			// 策略为空串。前端据此就地展开"查看上下文"。
+			"parent_content": src.ParentContent,
 			"chunk_index":    src.ChunkIndex,
 			"score":          src.Score,
 			// workspace 传请求名：前端 SourceItem 用它判定可预览并传给预览抽屉。

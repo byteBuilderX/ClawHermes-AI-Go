@@ -62,6 +62,61 @@ func TestRAGQueryKeywordUsesWorkspaceID(t *testing.T) {
 	}
 }
 
+// TestRAGQueryEnrichesSourceWithParentContent 覆盖 expandParentContext 回填路径:
+// 命中 leaf 带 ParentID 时,Query 经 GetChunksByIDs→GetParentByID 把整节原文写进
+// Source.ParentContent(Parent-Child 设计意图"命中 child 回取 parent"的检索侧闭环)。
+func TestRAGQueryEnrichesSourceWithParentContent(t *testing.T) {
+	service := NewRAGService(nil, nil, zap.NewNop())
+	service.SetChunkRepo(&recordingChunkRepo{
+		chunks: []domain.Chunk{{
+			ID: "leaf-1", DocID: "doc-1", Text: "leaf-text", ParentID: "p1",
+		}},
+		chunksByIDs: []domain.Chunk{{ID: "leaf-1", ParentID: "p1"}},
+		lastParent:  &port.ParentChunk{ID: "p1", Content: "whole-section-text"},
+	})
+
+	result, err := service.Query(context.Background(), RAGQueryRequest{
+		TenantID: "tenant-1", WorkspaceID: "workspace-1", Question: "q",
+		Mode: "keyword", TopK: 5, ViewerID: "test-user",
+	})
+	if err != nil {
+		t.Fatalf("keyword query with parent enrichment must succeed, got %v", err)
+	}
+	if len(result.Sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(result.Sources))
+	}
+	src := result.Sources[0]
+	if src.ChunkID != "leaf-1" {
+		t.Fatalf("ChunkID = %q, want leaf-1", src.ChunkID)
+	}
+	if src.Content != "leaf-text" {
+		t.Fatalf("Content = %q, want leaf-text", src.Content)
+	}
+	if src.ParentContent != "whole-section-text" {
+		t.Fatalf("ParentContent = %q, want whole-section-text (leaf parent must be attached)", src.ParentContent)
+	}
+}
+
+// TestRAGQuerySourceWithoutParentKeepsEmptyParentContent: 非 Parent-Child 命中
+// (无 ParentID)不得凭空产生 parent,保持递归摄取 workspace 的行为回归不变。
+func TestRAGQuerySourceWithoutParentKeepsEmptyParentContent(t *testing.T) {
+	service := NewRAGService(nil, nil, zap.NewNop())
+	service.SetChunkRepo(&recordingChunkRepo{
+		chunks:      []domain.Chunk{{ID: "leaf-1", DocID: "doc-1", Text: "leaf-text"}},
+		chunksByIDs: []domain.Chunk{{ID: "leaf-1"}},
+	})
+	result, err := service.Query(context.Background(), RAGQueryRequest{
+		TenantID: "tenant-1", WorkspaceID: "workspace-1", Question: "q",
+		Mode: "keyword", TopK: 5, ViewerID: "test-user",
+	})
+	if err != nil {
+		t.Fatalf("keyword query must succeed, got %v", err)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].ParentContent != "" {
+		t.Fatalf("parentless leaf must stay ParentContent empty, got %+v", result.Sources)
+	}
+}
+
 func TestRAGQueryPreservesDocumentIdentityAcrossRetrievalModes(t *testing.T) {
 	for _, mode := range []string{"vector", "keyword", "hybrid"} {
 		t.Run(mode, func(t *testing.T) {
@@ -302,6 +357,9 @@ type recordingChunkRepo struct {
 	listByErr  error
 	lastDocID  string
 	lastParent *port.ParentChunk
+	// chunksByIDs drives GetChunksByIDs (Query 层 expandParentContext 用它查
+	// 命中 leaf 的 ParentID); 默认 nil 让既有用例保持 no-op。
+	chunksByIDs []domain.Chunk
 }
 
 func (r *recordingChunkRepo) InsertBatch(ctx context.Context, tenantID, workspaceID string, chunks []domain.Chunk) error {
@@ -336,7 +394,7 @@ func (r *recordingChunkRepo) ListByDoc(ctx context.Context, tenantID, workspaceI
 }
 
 func (r *recordingChunkRepo) GetChunksByIDs(_ context.Context, _, _ string, _ []string) ([]domain.Chunk, error) {
-	return nil, nil
+	return r.chunksByIDs, nil
 }
 
 func (r *recordingChunkRepo) CountByWorkspace(context.Context, string, string) (int64, error) {
@@ -803,6 +861,39 @@ func TestRAGSearchEvidenceCarriesCitationMetadata(t *testing.T) {
 	}
 	if src.Snippet != "hit" {
 		t.Fatalf("Snippet = %q, want hit", src.Snippet)
+	}
+}
+
+// TestRAGSearchEvidenceCarriesParentContent 覆盖 B2 引用链闭环:Query 已把命中
+// chunk 的整节原文写进 Source.ParentContent,evidence 组装(RAGSearchSource 字面量
+// 补拷)必须把它带进下游 —— agent/SSE/持久化引用卡片据此就地展开上下文。
+func TestRAGSearchEvidenceCarriesParentContent(t *testing.T) {
+	vectors := NewMockVectorStore()
+	vectors.SetSearchResults([]port.VectorSearchResult{{
+		ID: "c1", SourceDocument: "doc-visible", Content: "hit", Score: 0.9,
+	}})
+	service := NewRAGService(&mockEmbedder{dim: 3}, vectors, zap.NewNop())
+	service.SetChunkRepo(&recordingChunkRepo{
+		chunksByIDs: []domain.Chunk{{ID: "c1", ParentID: "p1"}},
+		lastParent:  &port.ParentChunk{ID: "p1", Content: "whole-section-text"},
+	})
+	service.SetWorkspaceRepo(&recordingWorkspaceRepo{workspace: memberWorkspace()})
+	service.SetTenantRoleResolver(stubRoleResolver{role: "member"})
+	service.SetDocRepo(stubDocRepo{
+		visible: []string{"doc-visible"},
+		docs:    []*domain.Document{{ID: "doc-visible", Source: "annual-report.pdf"}},
+	})
+
+	fn := NewRAGSearchEvidenceFn(service, "tenant-1", "viewer-1")
+	ev, err := fn(context.Background(), []string{"support"}, "query", 5)
+	if err != nil {
+		t.Fatalf("expected evidence search to succeed, got %v", err)
+	}
+	if len(ev.Sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(ev.Sources))
+	}
+	if got := ev.Sources[0].ParentContent; got != "whole-section-text" {
+		t.Fatalf("evidence ParentContent = %q, want whole-section-text (must flow from Query through citation)", got)
 	}
 }
 

@@ -183,9 +183,9 @@ export type ExecutionArtifact = z.infer<typeof executionArtifactSchema>;
 // ChatCitationSource is a retrieval provenance entry carried by the SSE done
 // payload. Wire JSON is camelCase: the backend serializes domain.RAGSearchSource
 // with json tags (workspaceId/workspaceName/chunkId/documentId/documentTitle/
-// snippet/score/hasScore), and the same camelCase shape is replayed from the
-// persisted chat_messages.sources_json on history load — live and replay render
-// identically with no field remap.
+// snippet/parentContent/score/hasScore), and the same camelCase shape is
+// replayed from the persisted chat_messages.sources_json on history load —
+// live and replay render identically with no field remap.
 export interface ChatCitationSource {
   workspaceId?: string;
   workspaceName?: string;
@@ -193,6 +193,9 @@ export interface ChatCitationSource {
   documentId?: string;
   documentTitle?: string;
   snippet?: string;
+  // parentContent: 命中 chunk 所在整节原文(Parent-Child 策略才有值)，供
+  // 引用卡片就地展开"查看上下文"；历史消息缺该字段按无展开入口处理
+  parentContent?: string;
   score?: number;
   hasScore?: boolean;
 }

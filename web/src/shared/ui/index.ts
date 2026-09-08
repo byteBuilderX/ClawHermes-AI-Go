@@ -8,6 +8,8 @@ export { FormPage } from './FormPage';
 export type { FormPageProps } from './FormPage';
 export { ListSkeleton } from './ListSkeleton';
 export type { ListSkeletonProps } from './ListSkeleton';
+export { ParentContextBlock } from './ParentContextBlock';
+export type { ParentContextBlockProps } from './ParentContextBlock';
 export { ResourceListPage } from './ResourceListPage';
 export type { ResourceListPageProps } from './ResourceListPage';
 export { ResponsiveDataView } from './ResponsiveDataView';

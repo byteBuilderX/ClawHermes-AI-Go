@@ -107,6 +107,9 @@ export const querySourceSchema = z
     content: z.string().optional().default(''),
     // P1.1 之后 query 响应带文档名与所在 workspace，用于来源卡片跳转预览
     document_title: z.string().optional().default(''),
+    // parent_content: 命中 chunk 所在整节原文(Parent-Child 策略才有值)，
+    // 供来源卡片就地展开"查看上下文"
+    parent_content: z.string().optional().default(''),
     workspace: z.string().optional().default(''),
   })
   .passthrough();
