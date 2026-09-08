@@ -121,10 +121,11 @@ func TestRAGQueryExternalRerankAppliesThresholdAfterRescore(t *testing.T) {
 
 func TestRAGQueryBuiltinRerankStableScoreDesc(t *testing.T) {
 	vectors := NewMockVectorStore()
-	// L2 distances 0.9/0.1/0.5 -> similarities 0.526/0.909/0.667.
+	// Mock scores are the storage layer's 0-1 similarities: chunk-b is most
+	// relevant (0.9), chunk-a least (0.2).
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.9},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.1},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.2},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.9},
 		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.5},
 	})
 	service := vectorRAGService(vectors)
@@ -139,10 +140,10 @@ func TestRAGQueryBuiltinRerankStableScoreDesc(t *testing.T) {
 	}
 	if len(got.Sources) != 3 || got.Sources[0].ChunkID != "chunk-b" ||
 		got.Sources[1].ChunkID != "chunk-c" || got.Sources[2].ChunkID != "chunk-a" {
-		t.Fatalf("builtin rerank must order by normalized score desc: %+v", got.Sources)
+		t.Fatalf("builtin rerank must order by similarity desc: %+v", got.Sources)
 	}
-	if got.Sources[0].Score != l2ToSim(0.1) || got.Sources[2].Score != l2ToSim(0.9) {
-		t.Fatalf("scores must be L2-normalized similarities: %+v", got.Sources)
+	if got.Sources[0].Score != 0.9 || got.Sources[2].Score != 0.2 {
+		t.Fatalf("scores must pass through storage similarities: %+v", got.Sources)
 	}
 }
 
@@ -376,9 +377,9 @@ func TestRAGQueryBuiltinSemanticRerankRescores(t *testing.T) {
 func TestRAGQueryBuiltinSemanticRerankFailsOpenOnError(t *testing.T) {
 	vectors := NewMockVectorStore()
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.1},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.05},
-		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.2},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.3},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.9},
+		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.6},
 	})
 	reranker := &fakeReranker{err: errors.New("llm down")}
 	metrics := &rerankMetrics{}
@@ -396,8 +397,8 @@ func TestRAGQueryBuiltinSemanticRerankFailsOpenOnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rerank failure must not fail the query: %v", err)
 	}
-	// fail-open：保持召回分数排序（chunk-b 的 L2 最小 → 相似度最高）。
-	if len(got.Sources) != 3 || got.Sources[0].ChunkID != "chunk-b" || got.Sources[0].Score != l2ToSim(0.05) {
+	// fail-open：保持召回分数排序（chunk-b 相似度 0.9 最高）。
+	if len(got.Sources) != 3 || got.Sources[0].ChunkID != "chunk-b" || got.Sources[0].Score != 0.9 {
 		t.Fatalf("fallback must keep recall-score ordering: %+v", got.Sources)
 	}
 	if len(metrics.requests) != 1 || metrics.requests[0] != "tenant-1:builtin-llm:degraded" {
@@ -464,12 +465,12 @@ func TestRerankSemanticNarrowsToTopN(t *testing.T) {
 func TestRAGQueryBuiltinSemanticRerankPartialTailFill(t *testing.T) {
 	vectors := NewMockVectorStore()
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.8},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.7},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.4},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.5},
 		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.6},
 	})
 	reranker := &fakeReranker{results: []knowledgeport.RerankResult{
-		{Index: 2, Score: 0.9}, // LLM 只返回第 3 条
+		{Index: 2, Score: 0.9}, // LLM 只返回第 3 条（chunk-c）
 	}}
 	service := vectorRAGService(vectors)
 	service.SetSemanticReranker(reranker, 10)
@@ -483,15 +484,15 @@ func TestRAGQueryBuiltinSemanticRerankPartialTailFill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// LLM 只给 chunk-c 0.9；chunk-a/b 未被打分，按召回分（L2 0.8/0.7→sim）补尾。
+	// LLM 只给 chunk-c 0.9；chunk-a/b 未被打分，按召回相似度降序补尾。
 	if len(got.Sources) != 3 {
 		t.Fatalf("sources=%+v", got.Sources)
 	}
 	if got.Sources[0].ChunkID != "chunk-c" || got.Sources[0].Score != 0.9 {
 		t.Fatalf("LLM-scored candidate must sort first, got %+v", got.Sources[0])
 	}
-	if got.Sources[1].ChunkID != "chunk-b" || got.Sources[1].Score != l2ToSim(0.7) ||
-		got.Sources[2].ChunkID != "chunk-a" || got.Sources[2].Score != l2ToSim(0.8) {
+	if got.Sources[1].ChunkID != "chunk-b" || got.Sources[1].Score != 0.5 ||
+		got.Sources[2].ChunkID != "chunk-a" || got.Sources[2].Score != 0.4 {
 		t.Fatalf("tail-filled candidates keep recall scores, got %+v", got.Sources[1:])
 	}
 }
@@ -499,9 +500,9 @@ func TestRAGQueryBuiltinSemanticRerankPartialTailFill(t *testing.T) {
 func TestRAGQueryBuiltinSemanticRerankEmptyLLMResultsFillsTail(t *testing.T) {
 	vectors := NewMockVectorStore()
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.8},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.7},
-		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.6},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.4},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.6},
+		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.8},
 	})
 	reranker := &fakeReranker{results: []knowledgeport.RerankResult{}} // LLM 返回空
 	service := vectorRAGService(vectors)
@@ -519,13 +520,13 @@ func TestRAGQueryBuiltinSemanticRerankEmptyLLMResultsFillsTail(t *testing.T) {
 	if reranker.calls != 1 {
 		t.Fatalf("semantic rerank must be invoked for a 3-candidate pool, calls=%d", reranker.calls)
 	}
-	// LLM 空结果 → 全池按召回分补尾（sim 降序 = L2 升序），无重复无越界。
+	// LLM 空结果 → 全池按召回相似度降序补尾，无重复无越界。
 	if len(got.Sources) != 3 {
 		t.Fatalf("sources=%+v", got.Sources)
 	}
-	if got.Sources[0].ChunkID != "chunk-c" || got.Sources[0].Score != l2ToSim(0.6) ||
-		got.Sources[1].ChunkID != "chunk-b" || got.Sources[1].Score != l2ToSim(0.7) ||
-		got.Sources[2].ChunkID != "chunk-a" || got.Sources[2].Score != l2ToSim(0.8) {
+	if got.Sources[0].ChunkID != "chunk-c" || got.Sources[0].Score != 0.8 ||
+		got.Sources[1].ChunkID != "chunk-b" || got.Sources[1].Score != 0.6 ||
+		got.Sources[2].ChunkID != "chunk-a" || got.Sources[2].Score != 0.4 {
 		t.Fatalf("tail-filled candidates keep recall scores, got %+v", got.Sources)
 	}
 }
