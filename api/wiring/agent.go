@@ -159,7 +159,7 @@ func (a ragSearchAdapter) SearchKnowledgeWithEvidence(
 		out.Sources = append(out.Sources, agentport.RAGSearchSource{
 			WorkspaceID: src.WorkspaceID, WorkspaceName: src.WorkspaceName, ChunkID: src.ChunkID,
 			DocumentID: src.DocumentID, DocumentTitle: src.DocumentTitle, Snippet: src.Snippet,
-			Score: src.Score, HasScore: src.HasScore,
+			ParentContent: src.ParentContent, Score: src.Score, HasScore: src.HasScore,
 		})
 	}
 	// NoAnswer 透传：knowledge 信号 → agent 域类型（字段一一对应，reason

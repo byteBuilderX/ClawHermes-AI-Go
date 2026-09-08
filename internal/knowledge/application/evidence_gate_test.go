@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	knowledgeport "github.com/byteBuilderX/stratum/internal/knowledge/domain/port"
@@ -16,9 +17,11 @@ type stubSufficiencyJudge struct {
 	verdict          knowledgeport.SufficiencyVerdict
 	err              error
 	lastInstructions string
+	lastEvidence     string
 }
 
-func (s *stubSufficiencyJudge) JudgeSufficiency(_ context.Context, _, _, instructions string) (knowledgeport.SufficiencyVerdict, error) {
+func (s *stubSufficiencyJudge) JudgeSufficiency(_ context.Context, _, evidence, instructions string) (knowledgeport.SufficiencyVerdict, error) {
+	s.lastEvidence = evidence
 	s.lastInstructions = instructions
 	return s.verdict, s.err
 }
@@ -132,6 +135,40 @@ func TestJudgeSufficiencyGatePreservesStats(t *testing.T) {
 	}
 	if got.NoAnswer.BestScore != 0.8 || got.NoAnswer.RetrievedCount != 3 {
 		t.Errorf("NoAnswer stats wrong: BestScore=%v RetrievedCount=%d", got.NoAnswer.BestScore, got.NoAnswer.RetrievedCount)
+	}
+}
+
+// TestJudgeSufficiencyGateEvidenceIsEnrichedFormat 锁定 judge 与回答模型同格式:
+// gate 把 formatSources(result.Sources) 作 evidence 传给 judge —— leaf+parent 追加、
+// 同 section 多命中 parent 只带一次(与喂 LLM 的回答文本一致)。
+func TestJudgeSufficiencyGateEvidenceIsEnrichedFormat(t *testing.T) {
+	stub := &stubSufficiencyJudge{verdict: knowledgeport.SufficiencySufficient}
+	rs := NewRAGService(nil, nil, zap.NewNop())
+	rs.SetSufficiencyJudgeResolver(func(_ context.Context, _ string) (knowledgeport.SufficiencyJudge, error) {
+		return stub, nil
+	})
+	result := &RAGQueryResult{
+		Sources: []Source{
+			// 同一 section 的两个 leaf 命中 → parent 只应出现一次
+			{DocumentID: "d1", Content: "leaf-1a", ParentContent: "parent-section-a", Score: 0.8},
+			{DocumentID: "d1", Content: "leaf-1b", ParentContent: "parent-section-a", Score: 0.7},
+			{DocumentID: "d2", Content: "leaf-2", ParentContent: "parent-section-b", Score: 0.6},
+		},
+		BestScore:      0.8,
+		CandidateCount: 3,
+	}
+	got := rs.judgeSufficiencyGate(context.Background(), "tenant-1", "kb", "q", "qwen-turbo", "", result)
+	if got.NoAnswer != nil || len(got.Sources) != 3 {
+		t.Fatalf("sufficient verdict must pass through, got NoAnswer=%v sources=%d", got.NoAnswer, len(got.Sources))
+	}
+	ev := stub.lastEvidence
+	for _, want := range []string{"leaf-1a", "leaf-1b", "leaf-2", "parent-section-a", "parent-section-b"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("judge evidence missing %q:\n%s", want, ev)
+		}
+	}
+	if gotN := strings.Count(ev, "parent-section-a"); gotN != 1 {
+		t.Errorf("same-section parent must appear exactly once in judge evidence, got %d occurrence(s):\n%s", gotN, ev)
 	}
 }
 

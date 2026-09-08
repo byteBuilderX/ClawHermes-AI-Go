@@ -5,6 +5,7 @@ import { useState } from 'react';
 import type { ChatCitationSource } from '../model/agent';
 
 import { DocPreviewDrawer } from '@/modules/knowledge';
+import { ParentContextBlock } from '@/shared/ui';
 
 const { Text, Paragraph } = Typography;
 
@@ -81,6 +82,10 @@ export const SourceCardList = ({ sources }: SourceCardListProps) => {
                   {s.snippet}
                 </Paragraph>
               )}
+              {/* 命中 chunk 所在整节原文(Parent-Child 策略才有值)就地展开看
+                  上下文;展开触发器 stopPropagation 在共享组件内处理,避免
+                  同时触发外层卡片点开预览抽屉 */}
+              {s.parentContent && <ParentContextBlock content={s.parentContent} />}
             </div>
           );
         })}

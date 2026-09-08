@@ -521,6 +521,7 @@ type RAGSearchSource struct {
 	DocumentID    string  `json:"documentId"`
 	DocumentTitle string  `json:"documentTitle"`
 	Snippet       string  `json:"snippet"`
+	ParentContent string  `json:"parentContent,omitempty"` // whole enclosing section (Parent-Child); empty when leaf has no parent
 	Score         float64 `json:"score,omitempty"`
 	HasScore      bool    `json:"hasScore,omitempty"`
 }

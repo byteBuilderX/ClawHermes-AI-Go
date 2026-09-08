@@ -169,10 +169,26 @@ func resolveWorkspaceConfig(ctx context.Context, rs *RAGService, tenantID, ws st
 	return rw, nil
 }
 
+// formatSources assembles the retrieval context fed to the answer model and
+// the sufficiency judge. Each hit contributes its leaf Content (the focused
+// fragment that matched) plus, when the Parent-Child strategy set one, its
+// parent chunk Content (the whole enclosing section) so the model sees full
+// context, not just the fragment. Parent dedup keeps repeated hits inside the
+// same section from bloating the context; dedup keys on the parent text
+// because Source carries no parent ID across the REST/agent boundary. A leaf
+// without a parent formats exactly as before (Content only).
 func formatSources(sources []Source) string {
 	var sb strings.Builder
+	seenParent := make(map[string]struct{})
 	for _, src := range sources {
 		sb.WriteString(src.Content)
+		if src.ParentContent != "" {
+			if _, dup := seenParent[src.ParentContent]; !dup {
+				sb.WriteString("\n\n")
+				sb.WriteString(src.ParentContent)
+				seenParent[src.ParentContent] = struct{}{}
+			}
+		}
 		sb.WriteString("\n---\n")
 	}
 	return sb.String()
@@ -1309,6 +1325,8 @@ Example (bad): context mentions no pricing → "Pricing starts at $10/month." (f
 // vector retrieval) its similarity score. Keyword mode produces no score
 // (HasScore=false). DocumentTitle/Snippet are display metadata only — the
 // visible-set filter already ran inside Query before any source is emitted.
+// ParentContent is the whole enclosing section (Parent-Child strategy only),
+// filled by Query's parent expansion; empty when the leaf has no parent.
 type RAGSearchSource struct {
 	WorkspaceID   string
 	WorkspaceName string
@@ -1316,6 +1334,7 @@ type RAGSearchSource struct {
 	DocumentID    string
 	DocumentTitle string // source file name of the owning document
 	Snippet       string // rune-truncated chunk content preview
+	ParentContent string // whole enclosing section when the leaf has a parent
 	Score         float64
 	HasScore      bool
 }
@@ -1407,6 +1426,7 @@ func searchWorkspaceWithEvidence(ctx context.Context, rs *RAGService, tenantID, 
 			DocumentID:    src.DocumentID,
 			DocumentTitle: titles[src.DocumentID],
 			Snippet:       textutil.TruncateRunes(src.Content, constants.MaxSourceSnippetRunes),
+			ParentContent: src.ParentContent,
 			Score:         float64(src.Score),
 			HasScore:      src.Score != 0,
 		})
