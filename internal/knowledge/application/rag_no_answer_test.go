@@ -71,12 +71,11 @@ func TestQueryNoAnswerNoSources(t *testing.T) {
 
 func TestQueryNoAnswerThresholdFiltered(t *testing.T) {
 	vectors := NewMockVectorStore()
-	// MockVectorStore.Score 是 L2 距离，入池后经 l2ToSim（1/(1+d)）转换：
-	// 1.5/2.0/3.0 -> 0.4/0.333/0.25，全部低于阈值 0.5。
+	// MockVectorStore.Score 已是 0-1 归一化相似度，全部低于阈值 0.5。
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 1.5},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 2.0},
-		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 3.0},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.4},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.3},
+		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.2},
 	})
 	s := vectorRAGService(vectors)
 	got, err := s.Query(context.Background(), RAGQueryRequest{
@@ -143,10 +142,10 @@ func TestQueryNoAnswerMetricEmitted(t *testing.T) {
 // BestScore（校准数据源），且与 NoAnswer nil 解耦。
 func TestQueryBestScoreAlwaysFilled(t *testing.T) {
 	vectors := NewMockVectorStore()
-	// L2 距离 0.9/0.1 -> sim 0.526/0.909。
+	// Mock scores are 0-1 similarities: chunk-b is the pool max (0.9).
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.9},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.1},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.3},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.9},
 	})
 	s := vectorRAGService(vectors)
 	got, err := s.Query(context.Background(), RAGQueryRequest{
@@ -162,8 +161,8 @@ func TestQueryBestScoreAlwaysFilled(t *testing.T) {
 	if len(got.Sources) != 2 {
 		t.Fatalf("sources = %+v", got.Sources)
 	}
-	if got.BestScore != l2ToSim(0.1) {
-		t.Fatalf("bestScore = %f, want %f (pool max on the answer path)", got.BestScore, l2ToSim(0.1))
+	if got.BestScore != 0.9 {
+		t.Fatalf("bestScore = %f, want 0.9 (pool max on the answer path)", got.BestScore)
 	}
 	if got.CandidateCount != 2 {
 		t.Fatalf("candidateCount = %d, want 2", got.CandidateCount)
@@ -171,9 +170,9 @@ func TestQueryBestScoreAlwaysFilled(t *testing.T) {
 	// 阈值过滤后推导 max(score) 恒 >= threshold —— 必须用入口池统计，验证
 	// 截断后的 sources 分数不再是 BestScore。
 	vectors.SetSearchResults([]knowledgeport.VectorSearchResult{
-		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.9},
-		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.1},
-		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.01},
+		{ID: "chunk-a", SourceDocument: "doc-a", Content: "a", Score: 0.55},
+		{ID: "chunk-b", SourceDocument: "doc-b", Content: "b", Score: 0.7},
+		{ID: "chunk-c", SourceDocument: "doc-c", Content: "c", Score: 0.9},
 	})
 	got2, err := s.Query(context.Background(), RAGQueryRequest{
 		TenantID: "tenant-1", WorkspaceID: "workspace-1", Question: "q", Mode: "vector",
@@ -183,8 +182,8 @@ func TestQueryBestScoreAlwaysFilled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got2.BestScore != l2ToSim(0.01) {
-		t.Fatalf("bestScore after threshold = %f, want %f (entry pool, not filtered sources)", got2.BestScore, l2ToSim(0.01))
+	if got2.BestScore != 0.9 {
+		t.Fatalf("bestScore after threshold = %f, want 0.9 (entry pool, not filtered sources)", got2.BestScore)
 	}
 	if len(got2.Sources) != 1 || got2.NoAnswer != nil {
 		t.Fatalf("sources=%+v noAnswer=%+v, want one source and nil signal", got2.Sources, got2.NoAnswer)

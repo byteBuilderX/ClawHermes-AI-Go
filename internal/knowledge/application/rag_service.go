@@ -760,9 +760,10 @@ func widensRecall(identity string) bool {
 	return provider != "" && provider != "builtin-score-v1"
 }
 
-// vectorToPool converts raw vector hits into score-normalised sources,
-// mapping Milvus L2 distance to similarity so thresholds and the builtin
-// rerank sort uniformly across retrieval modes.
+// vectorToPool converts raw vector hits into sources. Scores are already
+// 0-1 normalized similarities produced by the storage layer
+// (pkg/storage/milvus.SearchResult.Score), so thresholds and the builtin
+// rerank sort uniformly across retrieval modes without a per-mode mapping.
 func vectorToPool(results []knowledgeport.VectorSearchResult) []Source {
 	pool := make([]Source, 0, len(results))
 	for _, vr := range results {
@@ -771,7 +772,7 @@ func vectorToPool(results []knowledgeport.VectorSearchResult) []Source {
 			ChunkID:    vr.ID,
 			Content:    vr.Content,
 			ChunkIndex: vr.ChunkIndex,
-			Score:      l2ToSim(vr.Score),
+			Score:      vr.Score,
 		})
 	}
 	return pool
@@ -1240,13 +1241,6 @@ func filterByScoreThreshold(pool []Source, threshold float32) []Source {
 		}
 	}
 	return filtered
-}
-
-// l2ToSim converts a Milvus L2 distance to a similarity score (1/(1+L2)):
-// lower distance → higher similarity, so threshold semantics ("keep score >=
-// threshold") mean the same thing in every retrieval mode.
-func l2ToSim(d float32) float32 {
-	return 1.0 / (1.0 + d)
 }
 
 func (rs *RAGService) RetrieveRelevantChunks(ctx context.Context, tenantID, question, workspace, embedModel string, topK int, viewerID string) ([]string, error) {

@@ -73,7 +73,7 @@ func (m *recallMetricSpy) IncKnowledgeQuery(queryType, status string) {
 	m.knowledgeQuery[queryType+"."+status]++
 }
 
-func TestTryVectorSearch_QueriesFourCandidatesInOrderAndSortsByDistance(t *testing.T) {
+func TestTryVectorSearch_QueriesFourCandidatesInOrderAndSortsBySimilarity(t *testing.T) {
 	tenant := "acme"
 	model := "embedding-3"
 	names := []string{
@@ -84,8 +84,8 @@ func TestTryVectorSearch_QueriesFourCandidatesInOrderAndSortsByDistance(t *testi
 	}
 
 	vs := &fakeVectorSearcher{byCollection: map[string][]vector.SearchResult{
-		names[0]: {{ID: "raw-far", Content: "raw far", Score: 0.9}},
-		names[2]: {{ID: "fact-near", Content: "fact near", Score: 0.1}},
+		names[0]: {{ID: "raw-far", Content: "raw far", Score: 0.1}},
+		names[2]: {{ID: "fact-near", Content: "fact near", Score: 0.9}},
 	}}
 	h := newTestRecallHandler(&fakeEmbedClient{vec: []float32{1, 2, 3}, model: model}, vs)
 
@@ -98,9 +98,9 @@ func TestTryVectorSearch_QueriesFourCandidatesInOrderAndSortsByDistance(t *testi
 	if len(got) != 2 {
 		t.Fatalf("expected 2 merged candidates, got %d", len(got))
 	}
-	// Smaller L2 distance ranks first, regardless of source collection.
+	// Higher similarity (0-1 cosine, larger = closer) ranks first across collections.
 	if got[0].ID != "fact-near" || got[1].ID != "raw-far" {
-		t.Fatalf("expected ascending-distance order [fact-near raw-far], got [%s %s]", got[0].ID, got[1].ID)
+		t.Fatalf("expected descending-similarity order [fact-near raw-far], got [%s %s]", got[0].ID, got[1].ID)
 	}
 }
 

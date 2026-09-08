@@ -38,11 +38,13 @@ func (f VectorSearchFilter) Validate() error {
 
 // VectorDoc represents a document in the vector store.
 type VectorDoc struct {
-	ID         string
-	Embedding  []float32
-	Metadata   map[string]interface{}
-	Similarity float64 // legacy cosine-style score; Milvus L2 search leaves this zero
-	Distance   float64 // L2 distance populated during Milvus search; lower is closer
+	ID        string
+	Embedding []float32
+	Metadata  map[string]interface{}
+	// Similarity is the cosine similarity in [0,1] returned by the storage
+	// layer (larger = more relevant). Search results are populated by the
+	// Milvus adapter; consumers ordering recall use it for rank building.
+	Similarity float64
 }
 
 // VectorStore manages embeddings and similarity search.
